@@ -120,6 +120,9 @@ $ miaw-solve audio testdata/audio_4c7n.wav
 The fixture was synthesized as `"4 c 7 n"` and comes back as `4C7N` — ~1–2 s on CPU.
 You can regenerate the fixture yourself with `scripts/make_audio_fixture.py`.
 
+> No image for this one — audio is a waveform, not something a screenshot conveys.
+> The command output above *is* the proof.
+
 ### reCAPTCHA v2 (headless Chromium)
 
 Against Google's official v2 test sitekey, the grid route renders the widget and
