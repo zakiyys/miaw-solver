@@ -1,7 +1,13 @@
 """Text worker — captcha tanya-jawab sederhana.
 
 Strategi (CPU, tanpa model): normalisasi → deteksi aritmatika → hitung aman.
-Fallback: balikin token angka/kata yang paling masuk akal.
+
+Prinsip: **tidak menebak.** Kalau tidak ada ekspresi aritmatika yang dikenali,
+worker ini melempar error — tidak mengembalikan angka pertama yang kebetulan
+dilihat, dan tidak mengembalikan pertanyaannya sendiri. README menyebutnya
+"silence beats a confident wrong answer"; di sini bentuknya exception, supaya
+`core.solve_text` bisa membungkusnya jadi `SolverError` dan pemanggil tahu
+bahwa pertanyaan itu memang tidak bisa dijawab.
 """
 from __future__ import annotations
 
@@ -9,13 +15,15 @@ import ast
 import operator
 import re
 
+# ast.Pow sengaja TIDAK ada di sini: `**` tidak pernah muncul di captcha
+# aritmatika, dan operator pangkat adalah jalan termurah menuju "9**9**9"
+# menghabiskan CPU. Operator yang tidak dibutuhkan tidak didaftarkan.
 _OPS = {
     ast.Add: operator.add,
     ast.Sub: operator.sub,
     ast.Mult: operator.mul,
     ast.Div: operator.truediv,
     ast.Mod: operator.mod,
-    ast.Pow: operator.pow,
     ast.USub: operator.neg,
 }
 
@@ -50,46 +58,51 @@ _SCALES = {
     "juta": 1_000_000, "million": 1_000_000,
 }
 
-# kamus gabungan untuk normalisasi frasa (urut panjang dulu)
-_WORDS = {}
+# kamus gabungan untuk normalisasi frasa (urut panjang dulu saat dipakai)
+_WORDS: dict[str, int] = {}
 _WORDS.update(_ONES)
 _WORDS.update(_TEENS)
 _WORDS.update(_TENS)
 _WORDS.update(_SCALES)
 
+# penanda internal: token ini berasal dari konversi kata-angka, jadi boleh
+# digabung dengan tetangganya. Digit yang memang ditulis berjejer oleh pembuat
+# captcha ("Enter the digits 4 7 1") TIDAK boleh digabung.
+_MARK = "\x00"
+
 
 def _parse_number_words(s: str) -> str:
     """Ubah kata-angka (EN+ID) jadi digit, mendukung ratusan/ribuan.
 
-    Contoh: "one hundred twenty five" -> "125", "dua ratus lima puluh" -> "250",
-            "one thousand" -> "1000". Frasa panjang didahulukan supaya
-            "dua puluh" tidak hancur jadi "2 puluh".
-    """
-    # Frasa (puluhan/belasan) dulu — paling panjang lebih dulu
-    for phrase, val in sorted(_WORDS.items(), key=lambda kv: -len(kv[0])):
-        s = re.sub(rf"\b{re.escape(phrase)}\b", f" {val} ", s)
+    Penggabungan hanya berlaku untuk token hasil konversi. ``one hundred twenty
+    five`` -> ``125`` · ``dua ratus lima puluh`` -> ``250`` · ``one thousand`` ->
+    ``1000``. Sebaliknya ``4 7 1`` (digit asli) tetap ``4 7 1``.
 
-    # Sekarang token berupa angka + pengali skala. Gabungkan "20 5" -> 25,
-    # "100 20 5" -> 125, "1 1000" -> 1000, dst.
-    tokens = s.split()
+    Frasa panjang didahulukan supaya ``dua puluh`` tidak hancur jadi ``2 puluh``.
+    """
+    for phrase, val in sorted(_WORDS.items(), key=lambda kv: -len(kv[0])):
+        s = re.sub(rf"\b{re.escape(phrase)}\b", f" {_MARK}{val}{_MARK} ", s)
+
     out: list[str] = []
     i = 0
+    tokens = s.split()
     while i < len(tokens):
-        # kumpulkan deret angka berurutan
-        nums: list[int] = []
-        while i < len(tokens) and re.fullmatch(r"\d+", tokens[i]):
-            nums.append(int(tokens[i]))
-            i += 1
-        if not nums:
-            out.append(tokens[i])
+        tok = tokens[i]
+        if not tok.startswith(_MARK):
+            out.append(tok)
             i += 1
             continue
+
+        # deret angka hasil konversi saja yang digabung
+        nums: list[int] = []
+        while i < len(tokens) and tokens[i].startswith(_MARK):
+            nums.append(int(tokens[i].strip(_MARK)))
+            i += 1
 
         total = 0
         cur = 0
         for n in nums:
             if n >= 100:
-                # pengali skala: kalikan akumulasi (atau 1 kalau kosong)
                 cur = (cur or 1) * n
                 if n >= 1000:
                     total += cur
@@ -101,6 +114,7 @@ def _parse_number_words(s: str) -> str:
 
     return " ".join(out)
 
+
 # kata-operator (ID + EN) -> simbol
 _OPWORDS = {
     "tambah": "+", "ditambah": "+", "plus": "+", "and": "+",
@@ -109,7 +123,9 @@ _OPWORDS = {
     "bagi": "/", "dibagi": "/", "divided": "/",
 }
 
-_SYM = {"+": "+", "-": "-", "×": "*", "x": "*", "*": "*", "÷": "/", "/": "/"}
+# 'x'/'×' hanya jadi '*' kalau benar-benar diapit angka. `str.replace` global
+# akan merusak kata yang kebetulan mengandung 'x' ("box", "six").
+_X_BETWEEN_DIGITS = re.compile(r"(?<=\d)\s*[x×]\s*(?=\d)")
 
 
 def _safe_eval(expr: str):
@@ -128,33 +144,33 @@ def _safe_eval(expr: str):
 
 
 class TextWorker:
-    def solve(self, question: str) -> str:
-        q = question.lower().strip()
+    """Jawab captcha tanya-jawab. Lempar `ValueError` kalau tidak bisa dijawab."""
 
-        # kata-angka -> digit, mendukung ratusan/ribuan/puluhan majemuk.
+    def solve(self, question: str) -> str:
+        q = (question or "").lower().strip()
+        if not q:
+            raise ValueError("pertanyaan kosong")
+
+        # kata-angka -> digit (hanya token hasil konversi yang digabung)
         q = _parse_number_words(q)
-        # kata-operator -> simbol (sebelum simbol mentah), frasa panjang dulu juga
+        # kata-operator -> simbol, frasa panjang dulu
         for w, s in sorted(_OPWORDS.items(), key=lambda kv: -len(kv[0])):
             q = re.sub(rf"\b{re.escape(w)}\b", f" {s} ", q)
-        # simbol -> operator
-        for k, v in _SYM.items():
-            q = q.replace(k, v)
+        # 'x' di antara angka -> '*'
+        q = _X_BETWEEN_DIGITS.sub(" * ", q)
+        # sisa simbol mentah
+        q = q.replace("÷", "/")
 
-        # ambil ekspresi aritmatika pertama
         m = re.search(r"-?\d+(?:\s*[+\-*/%]\s*-?\d+)+", q)
-        if m:
-            expr = m.group(0).replace(" ", "")
-            try:
-                val = _safe_eval(expr)
-                if isinstance(val, float) and val.is_integer():
-                    val = int(val)
-                return str(val)
-            except Exception:  # noqa: BLE001
-                pass
+        if not m:
+            # Tidak ada ekspresi aritmatika. Jangan menebak angka pertama dan
+            # jangan mengembalikan pertanyaannya — itu jawaban salah yang pede.
+            raise ValueError(
+                "tidak ada ekspresi aritmatika yang dikenali di pertanyaan ini"
+            )
 
-        # fallback: angka tunggal yang disebut
-        nums = re.findall(r"-?\d+", q)
-        if nums:
-            return nums[0]
-
-        return q.strip()
+        expr = m.group(0).replace(" ", "")
+        val = _safe_eval(expr)          # ZeroDivisionError dibiarkan naik
+        if isinstance(val, float) and val.is_integer():
+            val = int(val)
+        return str(val)

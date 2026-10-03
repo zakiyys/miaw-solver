@@ -45,11 +45,53 @@ def test_text_rejects_empty() -> None:
 
 def test_text_rejects_injection() -> None:
     """Ekspresi jahat tidak boleh dieksekusi (AST terbatas)."""
-    from captcha_solver import solve_text
+    from captcha_solver import SolverError, solve_text
 
-    # __import__ bukan aritmatika → worker harus balik ke fallback angka/teks
-    out = solve_text("__import__('os').system('id')")
-    assert "uid=" not in out
+    # Bukan aritmatika → worker harus menolak, bukan mencoba mengeksekusi.
+    with pytest.raises(SolverError):
+        solve_text("__import__('os').system('id')")
+
+
+def test_text_tidak_menebak() -> None:
+    """Pertanyaan yang bukan hitungan harus SolverError, bukan jawaban salah.
+
+    Sebelumnya worker membalikkan angka pertama yang kebetulan terlihat
+    ("Enter the digits 4 7 1" → "4"), dan membalikkan pertanyaannya sendiri
+    kalau tidak ada angka. Dua-duanya jawaban salah yang pede.
+    """
+    from captcha_solver import SolverError, solve_text
+
+    for q in (
+        "Enter the digits 4 7 1",
+        "What is 10 divided by 0?",
+        "Type the word 'kucing'",
+        "Please type the letters as shown",
+        "Enter the code",
+        "0 1 2 3",
+        "abcdef",
+    ):
+        with pytest.raises(SolverError):
+            solve_text(q)
+
+
+def test_text_x_hanya_jadi_kali_di_antara_angka() -> None:
+    """'x' tidak boleh jadi '*' lewat replace global — 'box'/'six' harus aman."""
+    from captcha_solver import SolverError, solve_text
+
+    assert solve_text("7 x 6") == "42"
+    assert solve_text("box 7 x 6") == "42"          # 'box' tidak dirusak
+    with pytest.raises(SolverError):
+        solve_text("7 x")                            # 'x' tanpa angka kanan
+    with pytest.raises(SolverError):
+        solve_text("x 6")                            # 'x' tanpa angka kiri
+
+
+def test_text_tanpa_pangkat() -> None:
+    """ast.Pow tidak terdaftar — '**' harus ditolak, bukan dihitung."""
+    from captcha_solver import SolverError, solve_text
+
+    with pytest.raises(SolverError):
+        solve_text("2 ** 10")
 
 
 # --------------------------------------------------------------- image worker
@@ -245,9 +287,26 @@ import pytest as _pytest
     ("seratus tambah seratus", "200"),
     ("one thousand minus one", "999"),
     ("tiga ratus kali dua", "600"),
-    ("forty two", "42"),
     ("sembilan belas tambah satu", "20"),
 ])
 def test_kata_angka_ratusan(soal, harap):
     from captcha_solver import solve_text
     assert solve_text(soal) == harap
+
+
+@_pytest.mark.parametrize("soal", [
+    "forty two",              # angka tanpa operator = bukan pertanyaan hitung
+    "one hundred",            # idem
+    "Enter the digits 4 7 1",  # digit asli berjejer tidak boleh dijumlah
+])
+def test_angka_tanpa_operator_ditolak(soal):
+    """Angka saja bukan pertanyaan hitung — worker harus menolak, bukan menebak.
+
+    Perubahan perilaku v1.0.1: sebelumnya "forty two" dijawab "42" dan
+    "Enter the digits 4 7 1" dijawab "4". Dua-duanya jawaban yang tidak diminta
+    captcha (captcha yang menampilkan deret digit ingin digit itu diketik ulang,
+    bukan dijumlahkan).
+    """
+    from captcha_solver import SolverError, solve_text
+    with _pytest.raises(SolverError):
+        solve_text(soal)

@@ -19,14 +19,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 def test_audio_magic_bytes() -> None:
     from captcha_solver.workers.audio import looks_like_audio
 
-    assert looks_like_audio(b"RIFF" + b"\x00" * 20) is True
+    # WAV: container RIFF dengan penanda WAVE di byte 8..12
+    assert looks_like_audio(b"RIFF" + b"\x00" * 4 + b"WAVE" + b"\x00" * 8) is True
     assert looks_like_audio(b"OggS" + b"\x00" * 20) is True
     assert looks_like_audio(b"fLaC" + b"\x00" * 20) is True
     assert looks_like_audio(b"ID3\x04" + b"\x00" * 20) is True
+    # MP3 tanpa tag ID3: frame sync 11 bit
+    assert looks_like_audio(bytes([0xFF, 0xFB, 0x90, 0x00]) + b"\x00" * 20) is True
     # PNG / JPEG harus DITOLAK supaya tidak salah dikirim ke worker audio
     assert looks_like_audio(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8) is False
     assert looks_like_audio(b"\xff\xd8\xff\xe0" + b"\x00" * 8) is False
     assert looks_like_audio(b"short") is False
+
+
+def test_webp_tidak_dianggap_audio() -> None:
+    """WebP memakai container RIFF yang sama dengan WAV — harus dibedakan.
+
+    Tanpa cek byte 8..12, file gambar WebP lolos jadi "audio" dan dikirim ke
+    model suara.
+    """
+    from captcha_solver.workers.audio import looks_like_audio
+
+    webp = b"RIFF" + b"\x00" * 4 + b"WEBP" + b"\x00" * 8
+    assert looks_like_audio(webp) is False
+    # RIFF tanpa penanda WAVE juga bukan audio
+    assert looks_like_audio(b"RIFF" + b"\x00" * 20) is False
 
 
 def test_grid_worker_importable_without_browser() -> None:

@@ -89,12 +89,22 @@ def solve_image(image: BytesLike) -> str:
 def solve_text(question: str) -> str:
     """Solve captcha tanya-jawab ("Berapa 4 + 8 ?"). Balikin jawaban.
 
+    Worker teks sengaja **tidak menebak**: kalau tidak ada ekspresi aritmatika
+    yang dikenali (atau ada pembagian nol), dia melempar error — bukan
+    mengembalikan angka pertama yang kebetulan dilihat. Di sini error itu
+    dibungkus jadi `SolverError` supaya pemanggil cuma perlu tahu satu tipe.
+
     >>> solve_text("Berapa hasil dari 4 + 8 ?")   # doctest: +SKIP
     '12'
     """
     if not question or not question.strip():
         raise SolverError("pertanyaan kosong")
-    return _load_text().solve(question)
+    try:
+        return _load_text().solve(question)
+    except SolverError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise SolverError(f"teks gagal: {e}") from e
 
 
 def solve_audio(audio: BytesLike) -> str:
