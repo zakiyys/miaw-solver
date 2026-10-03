@@ -10,7 +10,7 @@ services:
       args:
         BASE: python:3.11-slim
         INSTALL_GRID: "0"
-    image: ghcr.io/zakiyys/miaw-solver:0.2.0
+    image: ghcr.io/zakiyys/miaw-solver:1.0.1
     container_name: miaw-solver
     ports:
       - "${MIAW_PORT:-8100}:8100"
@@ -27,13 +27,15 @@ services:
       # cache model whisper biar nggak unduh ulang tiap start
       - miaw-models:/home/miaw/.cache
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8100/health')"]
+      # `python3`, bukan `python`: base Ubuntu/CUDA tidak punya alias `python`.
+      test: ["CMD", "python3", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8100/health')"]
       interval: 30s
       timeout: 5s
       start_period: 25s
       retries: 3
 
-  # Varian grid: + Playwright/Chromium (buat reCAPTCHA v2 / hCaptcha).
+  # Varian grid: + Playwright/Chromium. Menambah BROWSER, bukan solver captcha
+  # yang jadi — jalur reCAPTCHA v2 masih eksperimental (lihat README).
   miaw-solver-grid:
     profiles: ["grid"]
     build:
@@ -41,7 +43,7 @@ services:
       args:
         BASE: python:3.11-slim
         INSTALL_GRID: "1"
-    image: ghcr.io/zakiyys/miaw-solver:0.2.0-grid
+    image: ghcr.io/zakiyys/miaw-solver:1.0.1-grid
     container_name: miaw-solver-grid
     ports:
       - "${MIAW_PORT:-8100}:8100"
@@ -52,20 +54,25 @@ services:
       MIAW_API_KEY: "${MIAW_API_KEY:-}"
       MIAW_RATE_LIMIT: "${MIAW_RATE_LIMIT:-0}"
       MIAW_WHISPER_MODEL: "${MIAW_WHISPER_MODEL:-base}"
+      # Chromium terpasang di sini (lihat Dockerfile); user `miaw` harus bisa baca.
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
     volumes:
       - miaw-models:/home/miaw/.cache
     # Chromium butuh shared memory lebih dari 64 MB default
     shm_size: "1gb"
 
   # Varian GPU (opsional turbo). Butuh nvidia-container-toolkit di host.
+  # Base WAJIB `cudnn-runtime`: ctranslate2 (faster-whisper) butuh cuDNN, dan
+  # tag `*-runtime-*` polos tidak membawanya.
+  # Status: UNTESTED — tidak ada host GPU untuk menguji build ini.
   miaw-solver-gpu:
     profiles: ["gpu"]
     build:
       context: .
       args:
-        BASE: nvidia/cuda:12.4.1-runtime-ubuntu22.04
+        BASE: nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
         INSTALL_GRID: "0"
-    image: ghcr.io/zakiyys/miaw-solver:0.2.0-gpu
+    image: ghcr.io/zakiyys/miaw-solver:1.0.1-gpu
     container_name: miaw-solver-gpu
     ports:
       - "${MIAW_PORT:-8100}:8100"

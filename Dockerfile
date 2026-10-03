@@ -1,10 +1,15 @@
 # syntax=docker/dockerfile:1
 # CPU-first image. GPU nggak wajib.
 #
+# Single-stage dengan build arg (bukan multi-stage) — lihat README.
+#
 # Build:
 #   docker build -t miaw-solver .                        # server + audio (default)
 #   docker build --build-arg INSTALL_GRID=1 -t miaw-solver:grid .   # + Chromium (berat)
-#   docker build --build-arg BASE=nvidia/cuda:12.4.1-runtime-ubuntu22.04 -t miaw-solver:gpu .
+#   docker build --build-arg BASE=nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 -t miaw-solver:gpu .
+#
+# Varian GPU WAJIB memakai tag `cudnn-runtime`: ctranslate2 (faster-whisper)
+# butuh cuDNN, dan `nvidia/cuda:*-runtime-*` tidak membawanya.
 ARG BASE=python:3.11-slim
 FROM ${BASE}
 
@@ -26,11 +31,17 @@ COPY requirements*.txt ./
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements-server.txt -r requirements-audio.txt
 
-# Grid (opsional, berat): playwright + Chromium
+# Grid (opsional, berat): playwright + Chromium.
+#
+# PLAYWRIGHT_BROWSERS_PATH harus di-set SEBELUM `playwright install`, dan
+# direktorinya harus di luar /root: kalau browser terpasang di cache root,
+# container yang jalan sebagai user `miaw` tidak akan menemukannya.
 ARG INSTALL_GRID=0
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN if [ "$INSTALL_GRID" = "1" ]; then \
         pip install --no-cache-dir -r requirements-grid.txt \
-        && playwright install --with-deps chromium ; \
+        && playwright install --with-deps chromium \
+        && chmod -R a+rX /ms-playwright ; \
     fi
 
 COPY pyproject.toml README.md LICENSE ./
@@ -50,8 +61,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 EXPOSE 8100
 
+# `python3`, bukan `python`: base Ubuntu/CUDA tidak punya alias `python`.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=25s --retries=3 \
-    CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8100/health')"
+    CMD python3 -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8100/health')"
 
 # Default: API server. CLI: docker run --rm miaw-solver miaw-solve text "4+8"
 ENTRYPOINT ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8100"]
