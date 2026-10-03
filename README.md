@@ -213,7 +213,7 @@ $ curl -X POST http://localhost:8100/solve/audio -F "file=@challenge.wav"
 {"status":1,"request":"4C7N","source":"local"}
 ```
 
-Full 2captcha mirror also verified — `/in` with `method=post`, `method=base64`,
+Full 2captcha mirror also verified — `method=post`, `method=base64`,
 `method=textcaptcha`, and auto-detected audio, each followed by `/res?action=get`:
 
 ```console
@@ -223,7 +223,55 @@ $ curl "http://localhost:8100/res?action=get&id=9853a3b6b613445f"
 {"status":1,"request":"8f3kd"}
 ```
 
-An unknown id returns `{"status":0,"request":"CAPCHA_NOT_READY"}`, matching 2captcha.
+### The `.php` paths behave like 2captcha
+
+`/in.php` and `/res.php` are aliases for `/in` and `/res`, but they follow
+2captcha's **wire format**: plain text by default, JSON only on request.
+
+```console
+$ curl -X POST localhost:8100/in.php -F "file=@captcha.png" -F "method=post" -F "key=$KEY"
+OK|9853a3b6b613445f
+
+$ curl "localhost:8100/res.php?key=$KEY&action=get&id=9853a3b6b613445f"
+OK|8f3kd
+
+$ curl -X POST "localhost:8100/in.php?json=1" -F "file=@captcha.png" -F "method=post" -F "key=$KEY"
+{"status":1,"request":"9853a3b6b613445f"}
+```
+
+The key may arrive as `X-API-Key` header, a `key` query parameter, **or** a `key`
+field in the form/JSON body — 2captcha sends it in the body, so the body has to be
+read before the key can be checked.
+
+Error strings follow 2captcha:
+
+| Situation | `.php` body | `/in`, `/res` JSON |
+|---|---|---|
+| unknown or expired id | `ERROR_WRONG_CAPTCHA_ID` | `{"status":0,"request":"ERROR_WRONG_CAPTCHA_ID"}` |
+| still queued | `CAPCHA_NOT_READY` | `{"status":0,"request":"CAPCHA_NOT_READY"}` |
+| solve failed | `ERROR_CAPTCHA_UNSOLVABLE` | `{"status":0,"request":"ERROR_CAPTCHA_UNSOLVABLE"}` |
+| upload over `MIAW_MAX_UPLOAD_MB` | `ERROR_TOO_BIG_CAPTCHA_FILESIZE` | same string in JSON |
+| bad/missing key | `ERROR_WRONG_USER_KEY` (HTTP 401) | same string in JSON |
+| `method=userrecaptcha` etc. | `ERROR_METHOD_NOT_SUPPORTED` | same string in JSON |
+
+> An unknown id returns `ERROR_WRONG_CAPTCHA_ID`, **not** `CAPCHA_NOT_READY`.
+> Reporting a missing id as "not ready" makes polling clients wait forever.
+
+Methods that need a vision model or a third-party solver — `userrecaptcha`,
+`hcaptcha`, `turnstile`, `geetest`, `funcaptcha`, `coordinates`, and friends —
+are rejected explicitly instead of being silently treated as an image captcha.
+
+### Event loop
+
+Every solve runs in a worker thread (`asyncio.to_thread`), so a slow solve — audio,
+or the 2captcha fallback that polls for up to 120 s — never freezes the server.
+Measured with the solver stubbed to `time.sleep(2)`:
+
+```console
+/in.php returned in        13.1 ms
+/health while task running  2.9 ms      # before the fix: waited the full 2 s
+2 tasks @ 2 s, MIAW_WORKERS=2  2.25 s   # serial would be ~4 s
+```
 
 ### Auth & rate limiting
 
@@ -316,18 +364,21 @@ Copy `.env.example` → `.env` to set the optional knobs (see [Configuration](#c
 
 | 2captcha endpoint | Miaw Solver |
 |---|---|
-| `POST /in.php` `method=post` | `POST /in` (multipart `file`) → `{"status":1,"request":"<task_id>"}` |
-| `POST /in.php` `method=base64` | `POST /in` (JSON `{"method":"base64","body":"..."}`) |
-| `POST /in.php` `method=textcaptcha` | `POST /in` (form `textcaptcha=...`) |
-| `POST /in.php` `method=audio` | `POST /in` (multipart `file`, audio auto-detected by magic bytes) |
-| `GET /res.php?action=get&id=` | `GET /res?action=get&id=` → `{"status":1,"request":"<answer>"}` |
-| `GET /res.php?action=getbalance` | `GET /balance` → `{"status":1,"request":"0.0"}` |
+| `POST /in.php` `method=post` | `POST /in.php` or `/in` (multipart `file`) → `OK\|<task_id>` / JSON |
+| `POST /in.php` `method=base64` | same (JSON `{"method":"base64","body":"...","key":"..."}`) |
+| `POST /in.php` `method=textcaptcha` | same (form `textcaptcha=...`) |
+| `POST /in.php` `method=audio` | same (multipart `file`, audio auto-detected by magic bytes) |
+| `POST /in.php` `method=userrecaptcha` | **not supported** → `ERROR_METHOD_NOT_SUPPORTED` |
+| `GET /res.php?action=get&id=` | `GET /res.php` or `/res` → `OK\|<answer>` / JSON |
+| `GET /res.php?action=getbalance` | `GET /balance` → `OK\|0.0` / JSON |
 | *(not in 2captcha)* | `POST /solve` — answer immediately, no polling |
 | *(not in 2captcha)* | `POST /solve/text`, `POST /solve/audio` |
 | *(not in 2captcha)* | `GET /health`, `GET /stats` |
 
-Polling semantics match: an unknown or expired id returns
-`{"status":0,"request":"CAPCHA_NOT_READY"}`.
+The `.php` paths answer in 2captcha's own wire format (plain text, JSON with
+`?json=1`); `/in` and `/res` always answer JSON so existing clients keep working.
+An unknown or expired id returns `ERROR_WRONG_CAPTCHA_ID` — not
+`CAPCHA_NOT_READY`, which would make a polling client wait forever.
 
 ---
 

@@ -48,3 +48,26 @@ echo
 echo "== /balance and /stats =="
 curl -s "$B/balance" "${H[@]}"; echo
 curl -s "$B/stats" "${H[@]}" | python3 -m json.tool
+
+echo
+echo "== stock 2captcha client: /in.php + /res.php, key in the body =="
+KQ="${KEY:+&key=$KEY}"
+ID3=$(curl -s -X POST "$B/in.php" -F "key=$KEY" -F "file=@testdata/captcha_like.png" -F "method=post" \
+      | cut -d'|' -f2)
+echo "  task id : $ID3"
+for _ in $(seq 1 15); do
+  R=$(curl -s "$B/res.php?action=get&id=$ID3$KQ")
+  case "$R" in
+    *CAPCHA_NOT_READY*) sleep 1 ;;
+    *) echo "  result  : $R"; break ;;
+  esac
+done
+
+echo
+echo "== same, but JSON =="
+curl -s -X POST "$B/in.php?json=1" -F "key=$KEY" -F "file=@testdata/captcha_like.png" -F "method=post"
+echo
+
+echo
+echo "== unknown id (must NOT be CAPCHA_NOT_READY) =="
+curl -s "$B/res.php?action=get&id=ngawur$KQ"; echo

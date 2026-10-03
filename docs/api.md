@@ -120,21 +120,23 @@ The `request` value is the task id to poll. Unknown methods return
 Audio is auto-detected: any upload whose first bytes look like a RIFF/WAV/MP3/OGG
 container is routed to the audio engine even without `method=audio`.
 
-### `GET /res`
+### `GET /res` / `GET /res.php`
 
 | Query | Result |
 |---|---|
-| `?action=get&id=<id>` | `{"status":1,"request":"<answer>"}` when done, `CAPCHA_NOT_READY` while pending |
-| `?action=getbalance` | `{"status":1,"request":"0.0"}` |
+| `?action=get&id=<id>` | `OK\|<answer>` when done, `CAPCHA_NOT_READY` while pending |
+| `?action=getbalance` | `OK\|0.0` |
+
+Add `&json=1` to get `{"status":1,"request":"..."}` instead of plain text.
 
 Polling example:
 
 ```bash
-ID=$(curl -s -X POST http://127.0.0.1:8100/in -F "file=@captcha.png" \
-      | python3 -c 'import sys,json;print(json.load(sys.stdin)["request"])')
+ID=$(curl -s -X POST "http://127.0.0.1:8100/in.php?key=$KEY" -F "file=@captcha.png" \
+      | cut -d'|' -f2)
 
 while :; do
-  R=$(curl -s "http://127.0.0.1:8100/res?action=get&id=$ID")
+  R=$(curl -s "http://127.0.0.1:8100/res.php?key=$KEY&action=get&id=$ID")
   case "$R" in *CAPCHA_NOT_READY*) sleep 1 ;; *) echo "$R"; break ;; esac
 done
 ```
@@ -144,9 +146,13 @@ Errors follow 2captcha conventions:
 | Response | Meaning |
 |---|---|
 | `CAPCHA_NOT_READY` | still queued or processing |
+| `ERROR_WRONG_CAPTCHA_ID` | id unknown or expired — **stop polling** |
+| `ERROR_CAPTCHA_UNSOLVABLE` | the engine failed on this captcha |
 | `ERROR_WRONG_USER_KEY` | auth failed (HTTP 401) |
 | `ERROR_TOO_MANY_REQUESTS` | rate limited (HTTP 429) |
-| `ERROR: <message>` | the engine failed |
+| `ERROR_TOO_BIG_CAPTCHA_FILESIZE` | upload over `MIAW_MAX_UPLOAD_MB` |
+| `ERROR_METHOD_NOT_SUPPORTED` | e.g. `method=userrecaptcha` — needs a vision model |
+| `ERROR_WRONG_METHOD` | method not recognised / no payload |
 
 ---
 
@@ -159,8 +165,21 @@ Only the base URL changes:
 + base_url = "http://your-miaw-solver:8100"
 ```
 
-`/in.php` and `/res.php` map to `/in` and `/res`. If your client hardcodes the
-`.php` suffix, add a reverse proxy rewrite or patch the two path constants.
+`/in.php` and `/res.php` are served natively and answer in 2captcha's own wire
+format (`OK|<value>`, `CAPCHA_NOT_READY`, `ERROR_*`). Add `json=1` if you would
+rather have JSON. `/in` and `/res` are kept as JSON-only aliases for clients
+written against earlier versions.
+
+The API key is accepted from `X-API-Key`, `?key=`, or a `key` field in the
+form/JSON body — so a stock 2captcha client that posts `key=...` works unchanged.
+
+### Methods that are **not** supported
+
+`userrecaptcha`, `hcaptcha`, `turnstile`, `geetest`, `funcaptcha`, `coordinates`
+and similar need a vision model or a third-party solver. They are rejected with
+`ERROR_METHOD_NOT_SUPPORTED` instead of being silently misread as an image
+captcha. Use 2captcha itself for those (the built-in fallback only covers image
+captchas).
 
 ## Task store
 
@@ -170,4 +189,5 @@ Only the base URL changes:
 | path (e.g. `/data/tasks.db`) | SQLite with WAL — survives restarts, safe across processes |
 
 Tasks expire after `MIAW_TASK_TTL` seconds (default 300) and are garbage
-collected on each access.
+collected on each access. On startup, tasks left in `processing` by a crash are
+returned to `pending` so a fresh worker picks them up.
