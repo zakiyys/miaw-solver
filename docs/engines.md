@@ -10,6 +10,26 @@ Pick the cheapest one that solves your captcha.
 | `audio` | audio bytes | spoken digits (`4C7N`) | faster-whisper | ~1–3 s |
 | `grid` | page URL + sitekey | reCAPTCHA v2, hCaptcha | Playwright + Chromium | ~5–20 s |
 
+## Coverage at a glance
+
+**Supported:** distorted-text images · arithmetic and word questions (EN + ID) ·
+spoken audio challenges · reCAPTCHA v2 checkbox · hCaptcha widget flow.
+
+**Not supported:** reCAPTCHA v3/Enterprise and Cloudflare Turnstile (score-based,
+no puzzle to solve) · image-grid selection ("click all buses") · slider/puzzle
+drag · FunCaptcha/Arkose · GeeTest. All of these need either a vision model or
+browser fingerprinting, which is out of scope for a CPU-first project. Use the
+2captcha fallback for them.
+
+## GPU
+
+The audio engine is the **only** one that can use a GPU, and it is **not
+auto-detected** — the default stays `cpu` even on a CUDA machine. Set
+`MIAW_WHISPER_DEVICE=cuda` to enable it; `MIAW_WHISPER_COMPUTE` then defaults to
+`float16`. A misconfigured CUDA runtime fails loudly on the first audio solve
+(missing `libcublas`/`libcudnn`), not at startup. See the README's *CPU vs GPU*
+section for the full checklist.
+
 ---
 
 ## OCR — distorted image text
