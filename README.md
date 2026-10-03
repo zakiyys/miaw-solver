@@ -304,6 +304,13 @@ $ curl -o /dev/null -w "%{http_code}" -H "X-API-Key: <your-key>" \
 200 200 429 429 429          # MIAW_RATE_LIMIT=3 → the 4th request is throttled
 ```
 
+### Project status
+
+`Development Status :: 3 - Alpha` — deliberately. The **public API is frozen**
+(`solve_image`, `solve_text`, `solve_audio`, `register_engine`), but engine
+coverage is still narrow: grid is experimental, hCaptcha is not implemented.
+The classifier says Alpha so nobody reads "1.0" as "handles every captcha".
+
 ### Tests
 
 ```console
@@ -311,7 +318,7 @@ $ pytest tests/
 49 passed in 2.91s
 ```
 
-49 tests, CPU-only, no network in the default suite. CI runs them on Python
+84 tests, CPU-only, no network in the default suite. CI runs them on Python
 3.10 / 3.11 / 3.12 **plus** a Docker job that boots the image and smoke-tests the API.
 
 ---
@@ -500,7 +507,7 @@ Install size guide: core ≈ 200 MB, `+server` ≈ +40 MB, `+audio` ≈ +150 MB 
 | Package | Version used | Why |
 |---|---|---|
 | `pytest` | `>=8` (9.1.1 tested) | The test runner. All tests are offline and deterministic. |
-| `hatchling` | build backend | Declared as `build-system` in `pyproject.toml`; no manual install needed. |
+| `setuptools` | build backend | Declared in `[build-system]` (`setuptools>=68`, `setuptools.build_meta`); pip pulls it in automatically. |
 
 ---
 
@@ -529,7 +536,7 @@ miaw-solver/
 ├── testdata/                # small fixtures used by tests and examples
 ├── scripts/                 # dev-only helpers (generate fixtures, live grid proof)
 ├── assets/                  # README banners
-├── Dockerfile               # multi-stage: core / grid / gpu
+├── Dockerfile               # single-stage, build args: core / grid / gpu
 └── docker-compose.yml       # profiles: default · grid · gpu
 ```
 
@@ -587,6 +594,17 @@ captcha type. The core holds one singleton per worker, created on first use.
 Default is CPU-only, and that is the point: the test suite runs on free CI runners
 and the Docker image has no CUDA dependency. A GPU is a **turbo option**, not a
 requirement — it only speeds up the **audio** engine. Nothing else uses it.
+
+### ⚠️ The GPU Docker variant is **untested**
+
+The `gpu` compose profile builds from `nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04`
+(the `cudnn-runtime` tag matters — plain `*-runtime-*` ships no cuDNN, and
+`ctranslate2` needs it). **This project has no GPU host to build or run it on, so
+the image has never been booted.** The base tag and the reasoning are verified;
+the built image is not. Treat it as untested until someone runs it.
+
+What *is* tested: `MIAW_WHISPER_DEVICE=cuda` is read correctly by the config layer
+(shown below), and the CPU path is what CI exercises.
 
 ### ⚠️ GPU is NOT auto-detected — you must turn it on
 
@@ -667,7 +685,7 @@ nothing else in the project depends on the GPU.
 ## Tests
 
 ```bash
-pytest tests/                    # 49 tests, offline, deterministic
+pytest tests/                    # 84 tests, offline, deterministic
 pytest tests/ -v                 # verbose
 pytest tests/test_core.py -q     # a single file
 python scripts/prove_grid.py     # live grid check (needs network + Chromium)
@@ -675,9 +693,9 @@ python scripts/prove_grid.py     # live grid check (needs network + Chromium)
 
 | File | Tests | Covers |
 |---|---|---|
-| `tests/test_core.py` | 15 | the public API — image, text, audio, routing, errors |
-| `tests/test_store.py` | 12 | memory + SQLite stores, TTL, exclusive claim, crash recovery, `redacted()` |
-| `tests/test_grid.py` | 5 | grid URL/sitekey handling, audio detection |
+| `tests/test_core.py` | 28 | the public API — image, text, audio, routing, errors, word-numbers |
+| `tests/test_store.py` | 10 | memory + SQLite stores, TTL, exclusive claim, crash recovery, `redacted()` |
+| `tests/test_grid.py` | 11 | grid URL/sitekey handling, audio detection (incl. WebP rejection) |
 | `tests/test_plugins.py` | 11 | `register_engine` — naming, overrides, error wrapping |
 | `tests/test_concurrency.py` | 6 | `_load_*` must not double-load models across threads |
 | `tests/test_server_loop.py` | 3 | the event loop stays responsive while a solve runs |
@@ -700,7 +718,7 @@ waits for `/health`, and checks an API response.
 - **v0.2** — audio (faster-whisper), 2captcha fallback, auth + rate limit, Docker ✅
 - **v0.3** — grid worker scaffold: reCAPTCHA v2 *experimental* (reaches the challenge, then stops; not on any door) · hCaptcha not implemented at all ✅
 - **v0.4** — SQLite task store, structured logging, config module ✅
-- **v1.0** — stable API, full docs, published wheel + GHCR image ✅
+- **v1.0** — frozen public API, full docs, published wheel + GHCR image ✅
 - **v1.0.1** — non-blocking server, real 2captcha compatibility ✅ **(current)**
 
 <p align="center"><code>v1.0.1</code></p>
