@@ -78,9 +78,23 @@ jobs:
           files: dist/*
           generate_release_notes: true
 
+      # PyPI publish — sengaja TIDAK memakai `if: secrets.X` karena GitHub
+      # melarang konteks `secrets` di level `if:` (workflow gagal di-parse).
+      # Pola yang sah: taruh token di env, cek di step lain lewat `env`.
+      - name: Check for PyPI token
+        id: pypi
+        env:
+          PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          if [ -n "$PYPI_API_TOKEN" ]; then
+            echo "have=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "have=0" >> "$GITHUB_OUTPUT"
+            echo "::notice::PYPI_API_TOKEN not set — skipping PyPI publish"
+          fi
+
       - name: Publish to PyPI
-        # Hanya jalan kalau secret PYPI_API_TOKEN diisi.
-        if: ${{ secrets.PYPI_API_TOKEN != '' }}
+        if: steps.pypi.outputs.have == '1'
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
