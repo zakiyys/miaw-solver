@@ -150,6 +150,56 @@ your origin.
 > worker spins up a tiny local HTTP server. **(2)** the widget needs ~1.5 s to
 > settle; clicking too early times out.
 
+### Against real, live CAPTCHAs — field test
+
+The test-key proof above shows the wiring works. It does **not** show what happens
+against a production site. So we ran that too, and recorded the exact stopping
+point. Reproduce with `python scripts/test_real_grid.py`.
+
+```console
+>>> Google official reCAPTCHA v2 demo  (google.com/recaptcha/api2/demo)
+    1. halaman terbuka      : HTTP 200 (275 ms)
+    2. widget ter-render    : iframe anchor ditemukan
+    3. cek pesan            : ok — "I'm not a robot reCAPTCHA"
+    4. checkbox diklik      : ok
+    5. token                : kosong
+    6. tantangan            : GAMBAR muncul — 'Select all images with a bus'
+    => BERHENTI DI TANTANGAN GAMBAR (butuh model vision)
+```
+
+Read that honestly: the browser flow is correct — page loads, widget renders,
+checkbox clicks. The wall is the **image challenge**, which needs a vision model.
+The audio detour was attempted too (`scripts/test_real_recaptcha_audio.py`) and
+Google answered **"Try again later"**, its standard soft block for datacenter-ish
+IP reputation. Neither is a bug in this repo; both are documented ceilings.
+
+The engines that *do* run standalone were measured against real CAPTCHAs pulled
+from the [ddddocr](https://github.com/sml2h3/ddddocr) sample set:
+
+| Real CAPTCHA | Truth | Our answer | Result |
+|---|---|---|---|
+| `yzm1.png` — distorted alphanumeric | `3n3D` | `3n3d` | ✅ correct (case-insensitive) |
+| `yzm2.jpeg` — Chinese click-order puzzle | *not a text task* | `''` | ✅ correctly **declined** |
+
+The second row is the interesting one: a puzzle CAPTCHA is outside the OCR
+engine's contract, and it returns empty rather than guessing. Silence beats a
+confident wrong answer.
+
+Text engine, including multi-word numbers in both languages:
+
+```console
+$ miaw-solve text "one hundred minus twenty five"   →  75
+$ miaw-solve text "dua ratus lima puluh dibagi lima" →  50
+$ miaw-solve text "one thousand minus one"           →  999
+$ miaw-solve text "sembilan belas tambah satu"       →  20
+```
+
+> This last group is a **regression fix found by the field test, not by unit
+> tests**. The original word-number table stopped at `dua puluh` / `seratus` and
+> had no `hundred`/`thousand`, so `one hundred minus twenty five` parsed as `1`.
+> Fixed in `captcha_solver/workers/text.py`; regression cases added to
+> `tests/test_core.py`.
+
 ### API (2captcha-compatible)
 
 ```console
@@ -191,10 +241,10 @@ $ curl -o /dev/null -w "%{http_code}" -H "X-API-Key: <your-key>" \
 
 ```console
 $ pytest tests/
-41 passed in 3.29s
+49 passed in 2.91s
 ```
 
-41 tests, CPU-only, no network in the default suite. CI runs them on Python
+49 tests, CPU-only, no network in the default suite. CI runs them on Python
 3.10 / 3.11 / 3.12 **plus** a Docker job that boots the image and smoke-tests the API.
 
 ---
@@ -542,7 +592,7 @@ nothing else in the project depends on the GPU.
 ## Tests
 
 ```bash
-pytest tests/                    # 41 tests, offline, deterministic
+pytest tests/                    # 49 tests, offline, deterministic
 pytest tests/ -v                 # verbose
 pytest tests/test_core.py -q     # a single file
 python scripts/prove_grid.py     # live grid check (needs network + Chromium)

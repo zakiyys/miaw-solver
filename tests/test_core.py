@@ -224,3 +224,21 @@ def _main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(_main())
+
+# --- regresi: kata-angka ratusan/ribuan (bug nyata ditemukan saat test real) ---
+import pytest as _pytest
+
+
+@_pytest.mark.parametrize("soal,harap", [
+    ("one hundred minus twenty five", "75"),
+    ("one hundred twenty five plus ten", "135"),
+    ("dua ratus lima puluh dibagi lima", "50"),
+    ("seratus tambah seratus", "200"),
+    ("one thousand minus one", "999"),
+    ("tiga ratus kali dua", "600"),
+    ("forty two", "42"),
+    ("sembilan belas tambah satu", "20"),
+])
+def test_kata_angka_ratusan(soal, harap):
+    from captcha_solver import solve_text
+    assert solve_text(soal) == harap

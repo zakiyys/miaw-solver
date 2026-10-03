@@ -13,6 +13,7 @@ venv/
 logs/
 models/*.onnx
 models/*.pt
+test_real_*_result.json
 
 # Env / secrets
 .env
