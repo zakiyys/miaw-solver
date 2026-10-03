@@ -21,6 +21,10 @@ Endpoint native (tanpa poll):
 
 Konfigurasi lewat env (lihat .env.example): MIAW_API_KEY, MIAW_RATE_LIMIT,
 MIAW_FALLBACK, MIAW_TASK_DB, MIAW_LOG_LEVEL, MIAW_LOG_JSON, MIAW_WORKERS.
+
+Catatan event loop: semua pemanggilan solver dijalankan lewat
+``asyncio.to_thread`` supaya solve lambat (audio, fallback 2captcha yang polling
+sampai 120 detik) tidak membekukan seluruh server — termasuk ``/health``.
 """
 from __future__ import annotations
 
@@ -94,11 +98,11 @@ async def _process(tid: str, kind: str, payload) -> None:
     t0 = time.perf_counter()
     try:
         if kind == "text":
-            answer, source = solve_text(payload), "local"
+            answer, source = await asyncio.to_thread(solve_text, payload), "local"
         elif kind == "audio":
-            answer, source = solve_audio(payload), "local"
+            answer, source = await asyncio.to_thread(solve_audio, payload), "local"
         else:
-            answer, source = fb.solve_image_safe(payload)
+            answer, source = await asyncio.to_thread(fb.solve_image_safe, payload)
         STORE.finish(tid, answer=answer)
         _STATS["ok"] += 1
         if source == "2captcha":
@@ -111,12 +115,17 @@ async def _process(tid: str, kind: str, payload) -> None:
         log.error("gagal", extra={"task_id": tid, "kind": kind}, exc_info=True)
 
 
+# Jeda poll worker saat antrean kosong. 0.2 s cukup responsif untuk klien yang
+# polling tiap ~1-2 detik, tapi tidak membakar CPU saat server sepi.
+_POOL_IDLE = 0.2
+
+
 async def _pool() -> None:
     """Beberapa worker mengambil tugas dari store (biar /in tidak memblokir)."""
     while True:
         task = STORE.claim()
         if not task:
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(_POOL_IDLE)
             continue
         await _process(task["id"], task["kind"], task["payload"])
 
@@ -170,7 +179,7 @@ async def solve(request: Request, file: UploadFile = File(...)) -> JSONResponse:
     _STATS["solve"] += 1
     t0 = time.perf_counter()
     try:
-        answer, source = fb.solve_image_safe(await file.read())
+        answer, source = await asyncio.to_thread(fb.solve_image_safe, await file.read())
         if source == "2captcha":
             _STATS["fallback"] += 1
         _STATS["ok"] += 1
@@ -190,7 +199,7 @@ async def solve_audio_door(request: Request, file: UploadFile = File(...)) -> JS
     _STATS["solve"] += 1
     t0 = time.perf_counter()
     try:
-        answer = solve_audio(await file.read())
+        answer = await asyncio.to_thread(solve_audio, await file.read())
         _STATS["ok"] += 1
         log.info("solve audio", extra={"source": "local",
                                        "ms": int((time.perf_counter() - t0) * 1000)})
@@ -207,7 +216,7 @@ async def solve_text_door(request: Request, question: str = Form(...)) -> JSONRe
         return g
     _STATS["solve"] += 1
     try:
-        answer = solve_text(question)
+        answer = await asyncio.to_thread(solve_text, question)
         _STATS["ok"] += 1
         return JSONResponse({"status": 1, "request": answer, "source": "local"})
     except Exception as e:  # noqa: BLE001

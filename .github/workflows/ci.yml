@@ -39,6 +39,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r "${{ matrix.extra.req }}"
           pip install pytest
+          # TestClient butuh httpx (dipakai tests/test_server.py).
+          if [ "${{ matrix.extra.name }}" = "server" ]; then pip install httpx; fi
 
       - name: Run tests
         run: python -m pytest tests/ -v

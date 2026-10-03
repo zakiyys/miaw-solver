@@ -8,15 +8,19 @@ Dua backend:
 Kontrak yang ditiru 2captcha:
     - `/in`  -> task_id segera (tanpa menunggu solve selesai)
     - `/res` -> "CAPCHA_NOT_READY" selama belum selesai, lalu jawabannya
-    - id tak dikenal / kedaluwarsa -> CAPCHA_NOT_READY
+    - id tak dikenal / kedaluwarsa -> ERROR_WRONG_CAPTCHA_ID (dipetakan di server)
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 import time
 import uuid
+from contextlib import closing
 from pathlib import Path
+
+log = logging.getLogger("captcha_solver.store")
 
 PENDING = "pending"
 DONE = "done"
@@ -116,8 +120,16 @@ class SqliteStore:
         self._ttl = ttl
         Path(self._path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        with self._conn() as c:
+        with closing(self._conn()) as c:
             c.executescript(self._SCHEMA)
+            # Sisa crash: tugas yang terlanjur ditandai 'processing' tidak akan
+            # pernah diselesaikan oleh siapa pun lagi — kembalikan ke pending
+            # supaya worker baru mengambilnya.
+            n = c.execute(
+                "UPDATE tasks SET status=? WHERE status='processing'", (PENDING,)
+            ).rowcount
+            if n:
+                log.info("store: memulihkan %d tugas processing -> pending", n)
 
     def _conn(self) -> sqlite3.Connection:
         c = sqlite3.connect(self._path, timeout=10, isolation_level=None)
@@ -141,7 +153,7 @@ class SqliteStore:
     def add(self, kind: str, payload) -> str:
         blob, text = self._encode(payload)
         tid = new_id()
-        with self._lock, self._conn() as c:
+        with self._lock, closing(self._conn()) as c:
             self._gc(c)
             c.execute(
                 "INSERT INTO tasks(id,kind,payload,ptext,status,created) VALUES(?,?,?,?,?,?)",
@@ -150,7 +162,7 @@ class SqliteStore:
         return tid
 
     def claim(self) -> dict | None:
-        with self._lock, self._conn() as c:
+        with self._lock, closing(self._conn()) as c:
             self._gc(c)
             row = c.execute(
                 "SELECT * FROM tasks WHERE status=? ORDER BY created LIMIT 1", (PENDING,)
@@ -164,14 +176,14 @@ class SqliteStore:
             return d
 
     def finish(self, tid: str, answer: str | None = None, error: str | None = None) -> None:
-        with self._lock, self._conn() as c:
+        with self._lock, closing(self._conn()) as c:
             if error:
                 c.execute("UPDATE tasks SET status=?,error=? WHERE id=?", (ERROR, error, tid))
             else:
                 c.execute("UPDATE tasks SET status=?,answer=? WHERE id=?", (DONE, answer, tid))
 
     def get(self, tid: str) -> dict | None:
-        with self._lock, self._conn() as c:
+        with self._lock, closing(self._conn()) as c:
             self._gc(c)
             row = c.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
             if not row:
@@ -181,7 +193,7 @@ class SqliteStore:
             return d
 
     def stats(self) -> dict:
-        with self._lock, self._conn() as c:
+        with self._lock, closing(self._conn()) as c:
             self._gc(c)
             rows = c.execute("SELECT status, COUNT(*) n FROM tasks GROUP BY status").fetchall()
             return {r["status"]: r["n"] for r in rows}

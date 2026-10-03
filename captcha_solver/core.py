@@ -1,9 +1,15 @@
 """INTI — otak captcha solver. Semua pintu (CLI/Library/API) manggil ke sini.
 
 CPU-first: model dimuat malas (lazy) supaya `import captcha_solver` tetap ringan.
+
+Thread-safety: pemuatan model dilindungi lock per-worker (double-checked locking).
+Server memanggil solver lewat `asyncio.to_thread`, jadi dua request bersamaan bisa
+masuk ke `_load_*` pada saat yang sama; tanpa lock, model dimuat dua kali
+(boros RAM + dua ONNX session).
 """
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Callable, Union
 
@@ -19,28 +25,38 @@ _ocr = None
 _text = None
 _audio = None
 
+_ocr_lock = threading.Lock()
+_text_lock = threading.Lock()
+_audio_lock = threading.Lock()
+
 
 def _load_ocr():
     global _ocr
-    if _ocr is None:
-        from .workers.ocr import OcrWorker
-        _ocr = OcrWorker()
+    if _ocr is None:                      # jalur cepat: sudah dimuat, tanpa lock
+        with _ocr_lock:
+            if _ocr is None:              # cek ulang di dalam lock
+                from .workers.ocr import OcrWorker
+                _ocr = OcrWorker()
     return _ocr
 
 
 def _load_text():
     global _text
     if _text is None:
-        from .workers.text import TextWorker
-        _text = TextWorker()
+        with _text_lock:
+            if _text is None:
+                from .workers.text import TextWorker
+                _text = TextWorker()
     return _text
 
 
 def _load_audio():
     global _audio
     if _audio is None:
-        from .workers.audio import AudioWorker
-        _audio = AudioWorker()
+        with _audio_lock:
+            if _audio is None:
+                from .workers.audio import AudioWorker
+                _audio = AudioWorker()
     return _audio
 
 
