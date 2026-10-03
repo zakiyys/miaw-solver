@@ -122,6 +122,10 @@ def solve(kind: str, payload) -> str:
     """Router tipe -> worker. `kind` in {"image", "text", "audio"}.
 
     Tipe lain yang sudah didaftarkan lewat `register_engine()` juga jalan.
+
+    `grid` sengaja **tidak** dirutekan: tidak ada pintu CLI/API untuknya, dan
+    `captcha_solver.workers.grid` hanya bisa dipakai lewat impor Python. Lihat
+    pesan errornya untuk alasan lengkapnya.
     """
     kind = (kind or "").strip().lower()
     if kind in ("image", "img", "post", "base64", "normal"):
@@ -130,6 +134,15 @@ def solve(kind: str, payload) -> str:
         return solve_text(payload)
     if kind in ("audio", "sound", "voice"):
         return solve_audio(payload)
+    if kind == "grid":
+        raise SolverError(
+            "grid belum tersedia lewat solve(). Tidak ada pintu CLI maupun API "
+            "untuknya; pakai captcha_solver.workers.grid langsung dari Python. "
+            "Jalur reCAPTCHA v2-nya pun eksperimental — berhenti di tantangan "
+            "gambar, dan rute audio sering ditolak Google ('Try again later'). "
+            "hCaptcha belum diimplementasikan. Untuk captcha sejenis, pakai "
+            "fallback 2captcha (MIAW_FALLBACK=1)."
+        )
     if kind in _ENGINES:
         return _run_engine(kind, payload)
     raise SolverError(f"tipe captcha tidak dikenal: {kind!r}")
@@ -168,6 +181,12 @@ def register_engine(name: str, fn: "Callable[[object], str]", *, override: bool 
         raise SolverError("engine harus callable")
     if key in _BUILTIN:
         raise SolverError(f"{key!r} adalah engine bawaan dan tidak bisa ditimpa")
+    if key in _RESERVED:
+        raise SolverError(
+            f"{key!r} adalah nama yang sudah dipesan untuk worker bawaan yang belum "
+            f"jadi. Pakai nama lain (mis. '{key}_custom') supaya tidak menyesatkan "
+            f"pemanggil `solve({key!r}, ...)` di kemudian hari."
+        )
     if key in _ENGINES and not override:
         raise SolverError(f"engine {key!r} sudah terdaftar (pakai override=True untuk menimpa)")
     _ENGINES[key] = fn
@@ -197,4 +216,9 @@ def _run_engine(name: str, payload) -> str:
 
 _BUILTIN = {"image", "img", "post", "base64", "normal",
             "text", "textcaptcha", "question",
-            "audio", "sound", "voice", "grid"}
+            "audio", "sound", "voice"}
+
+# Nama yang sudah dipesan untuk worker yang BELUM jadi (mis. `grid`). Bukan
+# engine bawaan — tidak ada implementasinya — tapi tetap tidak boleh dipakai
+# engine kustom, supaya arti `solve("grid", ...)` tidak berubah diam-diam.
+_RESERVED = {"grid"}

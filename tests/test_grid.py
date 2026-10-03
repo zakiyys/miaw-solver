@@ -3,7 +3,8 @@
 Yang diuji:
   - pesan error jelas kalau Playwright tidak terpasang
   - deteksi magic bytes audio (dipakai router /in)
-  - router `solve()` tidak salah arah ke grid kalau tipe tidak dikenal
+  - klaim grid JUJUR: tidak ada pintu CLI/API, dan `solve("grid")` bilang
+    terus terang "belum ada" — bukan "tipe tidak dikenal"
 """
 from __future__ import annotations
 
@@ -76,11 +77,100 @@ def test_cli_parser_has_all_subcommands() -> None:
         cli.main([])
 
 
+# --------------------------------------------------------------------------
+# Klaim grid harus jujur. Non-goal eksplisit: tidak ada model visi,
+# stealth/fingerprinting, atau proxy.
+# --------------------------------------------------------------------------
+
+
+def test_solve_grid_menolak_dengan_alasan_jelas() -> None:
+    """`solve("grid")` harus bilang "belum ada", bukan "tipe tidak dikenal"."""
+    from captcha_solver import solve
+    from captcha_solver.core import SolverError
+
+    with pytest.raises(SolverError) as ei:
+        solve("grid", "https://example.com")
+    msg = str(ei.value)
+    assert "grid" in msg
+    # bukan pesan generik "tipe tidak dikenal"
+    assert "tidak dikenal" not in msg
+    assert "belum tersedia" in msg or "belum ada" in msg
+
+
+def test_tipe_benar_benar_ngawur_tetap_ditolak() -> None:
+    """Tipe yang memang tidak ada tetap dapat pesan 'tidak dikenal'."""
+    from captcha_solver import solve
+    from captcha_solver.core import SolverError
+
+    with pytest.raises(SolverError) as ei:
+        solve("tidak_ada_engine_ini", "x")
+    assert "tidak dikenal" in str(ei.value)
+
+
+def test_grid_tidak_bisa_dipakai_engine_kustom() -> None:
+    """Nama 'grid' dipesan — tidak boleh dibajak engine kustom."""
+    from captcha_solver.core import SolverError, register_engine, unregister_engine
+
+    with pytest.raises(SolverError) as ei:
+        register_engine("grid", lambda payload: "x")
+    assert "dipesan" in str(ei.value)
+    unregister_engine("grid")  # tidak boleh error
+
+
+def test_cli_tidak_punya_pintu_grid() -> None:
+    """Tidak ada subcommand / flag grid di CLI — itu memang non-goal."""
+    from captcha_solver import cli
+
+    src = cli.__file__
+    text = open(src, encoding="utf-8").read()
+    # 'grid' hanya boleh muncul di komentar/dokumentasi sebagai "tidak ada",
+    # bukan sebagai nama subcommand atau flag.
+    assert "add_parser(\"grid\"" not in text
+    assert "add_parser('grid'" not in text
+    assert "--grid" not in text
+
+
+def test_api_tidak_punya_method_grid() -> None:
+    """Endpoint /in tidak boleh memperlakukan method=grid sebagai sesuatu."""
+    import os
+    import sys
+
+    if sys.version_info < (3, 10):  # pragma: no cover
+        pytest.skip("butuh py3.10+")
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx")
+
+    os.environ["MIAW_API_KEY"] = "kunci-uji"
+    root = str(Path(__file__).resolve().parent.parent)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
+    from fastapi.testclient import TestClient
+
+    import server as srv
+
+    with TestClient(srv.app) as client:
+        r = client.post(
+            "/in",
+            headers={"X-API-Key": "kunci-uji"},
+            json={"method": "grid", "sitekey": "abc", "pageurl": "https://x.test"},
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == 0
+    # ditolak jelas sebagai method tak didukung, bukan diam-diam jadi image
+    assert "ERROR_METHOD_NOT_SUPPORTED" in str(body["request"])
+
+
 def _main() -> int:
     for fn in (
         test_audio_magic_bytes,
         test_grid_worker_importable_without_browser,
         test_cli_parser_has_all_subcommands,
+        test_solve_grid_menolak_dengan_alasan_jelas,
+        test_tipe_benar_benar_ngawur_tetap_ditolak,
+        test_grid_tidak_bisa_dipakai_engine_kustom,
+        test_cli_tidak_punya_pintu_grid,
     ):
         fn()
         print(f"  ok  {fn.__name__}")

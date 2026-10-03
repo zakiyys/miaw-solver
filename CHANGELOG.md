@@ -13,8 +13,13 @@ First stable release. One core, three doors (library / CLI / HTTP API), CPU-firs
   `solve()` dispatcher in `captcha_solver.core`.
 - **Audio captcha engine** — offline speech-to-text via `faster-whisper`;
   handles Google's spoken-digit audio challenges (`4 c 7 n` → `4C7N`).
-- **Grid captcha engine** — reCAPTCHA v2 (including the audio-challenge
-  fallback) and hCaptcha via headless Chromium + Playwright.
+- **Grid captcha engine** — *experimental, not wired to the CLI or API.*
+  reCAPTCHA v2 via headless Chromium + Playwright: the widget is driven from a
+  real origin and the checkbox is clicked, but the solve stops at the image
+  challenge. The audio-challenge fallback exists and is unreliable in practice
+  (Google frequently answers `Try again later` based on IP reputation).
+  **hCaptcha is not implemented** — `solve_hcaptcha()` raises. Reachable only by
+  importing `captcha_solver.workers.grid` from Python.
 - **Text / question engine** — arithmetic and word problems with word-number
   normalisation in English and Indonesian (`tiga tambah lima` → `8`).
 - **2captcha-compatible HTTP contract** — `/in` (post, base64, textcaptcha,
@@ -30,7 +35,8 @@ First stable release. One core, three doors (library / CLI / HTTP API), CPU-firs
 - **Structured logging** — human-readable text or JSON, with secret redaction.
 - **Centralised configuration** in `captcha_solver/config.py`, with a
   `redacted()` view safe to expose on `/health`.
-- **Docker** — multi-stage image with `core`, `grid`, and `gpu` build profiles.
+- **Docker** — single-stage image (build args, not stages) with `core`, `grid`,
+  and `gpu` build profiles.
 - **CI/CD** — test matrix on GitHub Actions (CPU-only) and a release workflow
   producing a wheel plus a GHCR image.
 - **Documentation** — `docs/` (engines, API, deployment), `examples/`, and this

@@ -95,7 +95,7 @@ class GridWorker:
                 "pip install 'miaw-solver[grid]' && playwright install chromium"
             ) from e
 
-    async def _launch(self, pw, pageurl: str | None = None):
+    async def _launch(self, pw):
         browser = await pw.chromium.launch(
             headless=self._headless,
             args=[
@@ -126,6 +126,23 @@ class GridWorker:
         if not resp.ok:
             raise RuntimeError(f"gagal unduh audio: HTTP {resp.status}")
         return await resp.body()
+
+    async def _poll_token(self, page, timeout_ms: int) -> str:
+        """Tunggu `#g-recaptcha-response` terisi, maksimal `timeout_ms`.
+
+        Polling pendek, bukan sekali baca: token bisa terisi beberapa ratus ms
+        setelah checkbox diklik. Mengembalikan "" kalau tetap kosong.
+        """
+        deadline = asyncio.get_running_loop().time() + timeout_ms / 1000
+        while True:
+            token = await page.evaluate(
+                "() => document.querySelector('#g-recaptcha-response')?.value || ''"
+            )
+            if token:
+                return token
+            if asyncio.get_running_loop().time() >= deadline:
+                return ""
+            await page.wait_for_timeout(250)
 
     async def solve_recaptcha_v2(self, pageurl: str, sitekey: str) -> str:
         """Selesaikan reCAPTCHA v2 lewat jalur tantangan audio.
@@ -169,6 +186,14 @@ class GridWorker:
 
                 await box.click(timeout=self._timeout)
 
+                # Widget yang langsung lolos (mis. test-sitekey resmi Google)
+                # mengisi token tanpa tantangan apa pun. Cek dulu sebentar —
+                # kalau tidak, kode ini membuang penuh waktu tunggu tombol audio
+                # yang tidak akan pernah muncul.
+                token = await self._poll_token(page, 3000)
+                if token:
+                    return token
+
                 bframe = page.frame_locator(_SEL_BFIFRAME)
                 await bframe.locator(_SEL_AUDIO_BUTTON).click(timeout=self._timeout)
                 audio_bytes = await self._fetch_audio_bytes(page)
@@ -185,14 +210,7 @@ class GridWorker:
                 await bframe.locator(_SEL_AUDIO_RESPONSE).fill(answer)
                 await bframe.locator(_SEL_VERIFY).click(timeout=self._timeout)
 
-                token = await page.evaluate(
-                    "() => document.querySelector('#g-recaptcha-response')?.value || ''"
-                )
-                if not token:
-                    await page.wait_for_timeout(2500)
-                    token = await page.evaluate(
-                        "() => document.querySelector('#g-recaptcha-response')?.value || ''"
-                    )
+                token = await self._poll_token(page, 2500)
                 if not token:
                     raise RuntimeError("reCAPTCHA tidak memberi token (tantangan gagal)")
                 return token
@@ -210,6 +228,15 @@ class GridWorker:
         )
 
 
-def solve_recaptcha_v2(pageurl: str, sitekey: str, *, headless: bool = True) -> str:
-    """Pembungkus sinkron — biar bisa dipanggil dari CLI/library biasa."""
+def solve_recaptcha_v2(
+    pageurl: str, sitekey: str, *, headless: bool | None = None
+) -> str:
+    """Pembungkus sinkron — biar bisa dipanggil dari CLI/library biasa.
+
+    `headless=None` (default) mengambil `MIAW_GRID_HEADLESS` lewat `Config`.
+    """
+    if headless is None:
+        from ..config import CFG
+
+        headless = CFG.grid_headless
     return asyncio.run(GridWorker(headless=headless).solve_recaptcha_v2(pageurl, sitekey))
