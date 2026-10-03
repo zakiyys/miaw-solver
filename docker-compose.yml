@@ -1,0 +1,90 @@
+# CPU-first: `docker compose up -d` — jalan di mana aja, nggak butuh GPU.
+#   - varian grid (Chromium):  docker compose --profile grid up -d
+#   - varian GPU (CUDA):       docker compose --profile gpu up -d
+#
+# Salin .env.example → .env dulu kalau mau mengatur MIAW_* .
+services:
+  miaw-solver:
+    build:
+      context: .
+      args:
+        BASE: python:3.11-slim
+        INSTALL_GRID: "0"
+    image: ghcr.io/zakiyys/miaw-solver:0.2.0
+    container_name: miaw-solver
+    ports:
+      - "${MIAW_PORT:-8100}:8100"
+    restart: unless-stopped
+    environment:
+      # Jaring pengaman 2captcha — MATI default (biar nggak diam-diam keluar biaya)
+      MIAW_FALLBACK: "${MIAW_FALLBACK:-0}"
+      TWOCAPTCHA_API_KEY: "${TWOCAPTCHA_API_KEY:-}"
+      # Amankan API kalau diekspos ke internet
+      MIAW_API_KEY: "${MIAW_API_KEY:-}"
+      MIAW_RATE_LIMIT: "${MIAW_RATE_LIMIT:-0}"
+      MIAW_WHISPER_MODEL: "${MIAW_WHISPER_MODEL:-base}"
+    volumes:
+      # cache model whisper biar nggak unduh ulang tiap start
+      - miaw-models:/home/miaw/.cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8100/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 25s
+      retries: 3
+
+  # Varian grid: + Playwright/Chromium (buat reCAPTCHA v2 / hCaptcha).
+  miaw-solver-grid:
+    profiles: ["grid"]
+    build:
+      context: .
+      args:
+        BASE: python:3.11-slim
+        INSTALL_GRID: "1"
+    image: ghcr.io/zakiyys/miaw-solver:0.2.0-grid
+    container_name: miaw-solver-grid
+    ports:
+      - "${MIAW_PORT:-8100}:8100"
+    restart: unless-stopped
+    environment:
+      MIAW_FALLBACK: "${MIAW_FALLBACK:-0}"
+      TWOCAPTCHA_API_KEY: "${TWOCAPTCHA_API_KEY:-}"
+      MIAW_API_KEY: "${MIAW_API_KEY:-}"
+      MIAW_RATE_LIMIT: "${MIAW_RATE_LIMIT:-0}"
+      MIAW_WHISPER_MODEL: "${MIAW_WHISPER_MODEL:-base}"
+    volumes:
+      - miaw-models:/home/miaw/.cache
+    # Chromium butuh shared memory lebih dari 64 MB default
+    shm_size: "1gb"
+
+  # Varian GPU (opsional turbo). Butuh nvidia-container-toolkit di host.
+  miaw-solver-gpu:
+    profiles: ["gpu"]
+    build:
+      context: .
+      args:
+        BASE: nvidia/cuda:12.4.1-runtime-ubuntu22.04
+        INSTALL_GRID: "0"
+    image: ghcr.io/zakiyys/miaw-solver:0.2.0-gpu
+    container_name: miaw-solver-gpu
+    ports:
+      - "${MIAW_PORT:-8100}:8100"
+    restart: unless-stopped
+    environment:
+      MIAW_FALLBACK: "${MIAW_FALLBACK:-0}"
+      TWOCAPTCHA_API_KEY: "${TWOCAPTCHA_API_KEY:-}"
+      MIAW_API_KEY: "${MIAW_API_KEY:-}"
+      MIAW_WHISPER_MODEL: "${MIAW_WHISPER_MODEL:-base}"
+      MIAW_WHISPER_DEVICE: cuda
+    volumes:
+      - miaw-models:/home/miaw/.cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  miaw-models:

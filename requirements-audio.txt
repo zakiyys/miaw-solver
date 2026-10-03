@@ -1,0 +1,4 @@
+# Audio CAPTCHA support (speech-to-text on CPU).
+# The model itself (~75 MB for `base`) is downloaded on first use.
+-r requirements.txt
+faster-whisper>=1.0

@@ -1,0 +1,32 @@
+# --- build context hygiene (jangan ikut ke image / ke repo) ---
+.git
+.gitignore
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# dokumentasi & CI (nggak dibutuhin runtime)
+.github/
+docs/
+*.md
+!README.md
+!LICENSE
+
+# aset README
+assets/
+
+# berkas lokal
+.env
+.env.*
+!.env.example
+testdata/*.png
+testdata/*.jpg
+
+# cache model
+models/
+*.onnx
+*.pt

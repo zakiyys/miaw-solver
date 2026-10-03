@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: py${{ matrix.python }} / ${{ matrix.extra }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+        extra:
+          - name: core
+            req: requirements.txt
+          - name: server
+            req: requirements-server.txt
+          # audio + grid TIDAK diuji di CI: runner GitHub tidak punya Chromium
+          # dan unduhan model whisper bikin CI lambat/berat. Diuji pakai image
+          # Docker di job `docker` di bawah.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install (${{ matrix.extra.name }})
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r "${{ matrix.extra.req }}"
+          pip install pytest
+
+      - name: Run tests
+        run: python -m pytest tests/ -v
+
+      - name: CLI smoke test
+        run: |
+          python -m captcha_solver.cli text "7 x 6"
+
+  docker:
+    name: docker build + API smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build --build-arg INSTALL_GRID=1 -t miaw-solver:ci .
+
+      - name: Start server
+        run: docker run -d --name miaw -p 8100:8100 miaw-solver:ci
+
+      - name: Wait for health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8100/health >/dev/null 2>&1; then
+              echo "healthy after ${i}s"; break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8100/health
+
+      - name: API smoke test
+        run: |
+          curl -fsS -X POST http://127.0.0.1:8100/solve/text -F "question=4 + 8" | tee /tmp/out.json
+          grep -q '"request":"12"' /tmp/out.json
+
+      - name: Logs on failure
+        if: failure()
+        run: docker logs miaw
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f miaw || true

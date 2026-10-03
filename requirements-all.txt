@@ -1,0 +1,8 @@
+# Everything: core + API server + audio + grid.
+-r requirements-server.txt
+-r requirements-audio.txt
+-r requirements-grid.txt
+
+# Development / test tooling.
+pytest>=8
+build>=1.2

@@ -1,0 +1,5 @@
+# Grid CAPTCHA support (reCAPTCHA v2 / hCaptcha) via a headless browser.
+# Heavy: needs Chromium (~170 MB). Install the browser once with:
+#     playwright install chromium
+-r requirements.txt
+playwright>=1.40

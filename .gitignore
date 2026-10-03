@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Test / runtime
+.pytest_cache/
+logs/
+models/*.onnx
+models/*.pt
+
+# Env / secrets
+.env
+*.local
+
+# caches
+.ruff_cache/
+.coverage

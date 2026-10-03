@@ -1,0 +1,4 @@
+# Core — enough to run the CLI and the library (CPU only, no GPU).
+ddddocr==1.6.1
+pillow>=10
+numpy>=1.24
