@@ -1,9 +1,15 @@
 """INTI — otak captcha solver. Semua pintu (CLI/Library/API) manggil ke sini.
 
 CPU-first: model dimuat malas (lazy) supaya `import captcha_solver` tetap ringan.
+
+Thread-safety: pemuatan model dilindungi lock per-worker (double-checked locking).
+Server memanggil solver lewat `asyncio.to_thread`, jadi dua request bersamaan bisa
+masuk ke `_load_*` pada saat yang sama; tanpa lock, model dimuat dua kali
+(boros RAM + dua ONNX session).
 """
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Callable, Union
 
@@ -19,28 +25,38 @@ _ocr = None
 _text = None
 _audio = None
 
+_ocr_lock = threading.Lock()
+_text_lock = threading.Lock()
+_audio_lock = threading.Lock()
+
 
 def _load_ocr():
     global _ocr
-    if _ocr is None:
-        from .workers.ocr import OcrWorker
-        _ocr = OcrWorker()
+    if _ocr is None:                      # jalur cepat: sudah dimuat, tanpa lock
+        with _ocr_lock:
+            if _ocr is None:              # cek ulang di dalam lock
+                from .workers.ocr import OcrWorker
+                _ocr = OcrWorker()
     return _ocr
 
 
 def _load_text():
     global _text
     if _text is None:
-        from .workers.text import TextWorker
-        _text = TextWorker()
+        with _text_lock:
+            if _text is None:
+                from .workers.text import TextWorker
+                _text = TextWorker()
     return _text
 
 
 def _load_audio():
     global _audio
     if _audio is None:
-        from .workers.audio import AudioWorker
-        _audio = AudioWorker()
+        with _audio_lock:
+            if _audio is None:
+                from .workers.audio import AudioWorker
+                _audio = AudioWorker()
     return _audio
 
 
@@ -73,12 +89,22 @@ def solve_image(image: BytesLike) -> str:
 def solve_text(question: str) -> str:
     """Solve captcha tanya-jawab ("Berapa 4 + 8 ?"). Balikin jawaban.
 
+    Worker teks sengaja **tidak menebak**: kalau tidak ada ekspresi aritmatika
+    yang dikenali (atau ada pembagian nol), dia melempar error — bukan
+    mengembalikan angka pertama yang kebetulan dilihat. Di sini error itu
+    dibungkus jadi `SolverError` supaya pemanggil cuma perlu tahu satu tipe.
+
     >>> solve_text("Berapa hasil dari 4 + 8 ?")   # doctest: +SKIP
     '12'
     """
     if not question or not question.strip():
         raise SolverError("pertanyaan kosong")
-    return _load_text().solve(question)
+    try:
+        return _load_text().solve(question)
+    except SolverError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise SolverError(f"teks gagal: {e}") from e
 
 
 def solve_audio(audio: BytesLike) -> str:
@@ -106,6 +132,10 @@ def solve(kind: str, payload) -> str:
     """Router tipe -> worker. `kind` in {"image", "text", "audio"}.
 
     Tipe lain yang sudah didaftarkan lewat `register_engine()` juga jalan.
+
+    `grid` sengaja **tidak** dirutekan: tidak ada pintu CLI/API untuknya, dan
+    `captcha_solver.workers.grid` hanya bisa dipakai lewat impor Python. Lihat
+    pesan errornya untuk alasan lengkapnya.
     """
     kind = (kind or "").strip().lower()
     if kind in ("image", "img", "post", "base64", "normal"):
@@ -114,6 +144,15 @@ def solve(kind: str, payload) -> str:
         return solve_text(payload)
     if kind in ("audio", "sound", "voice"):
         return solve_audio(payload)
+    if kind == "grid":
+        raise SolverError(
+            "grid belum tersedia lewat solve(). Tidak ada pintu CLI maupun API "
+            "untuknya; pakai captcha_solver.workers.grid langsung dari Python. "
+            "Jalur reCAPTCHA v2-nya pun eksperimental — berhenti di tantangan "
+            "gambar, dan rute audio sering ditolak Google ('Try again later'). "
+            "hCaptcha belum diimplementasikan. Untuk captcha sejenis, pakai "
+            "fallback 2captcha (MIAW_FALLBACK=1)."
+        )
     if kind in _ENGINES:
         return _run_engine(kind, payload)
     raise SolverError(f"tipe captcha tidak dikenal: {kind!r}")
@@ -152,6 +191,12 @@ def register_engine(name: str, fn: "Callable[[object], str]", *, override: bool 
         raise SolverError("engine harus callable")
     if key in _BUILTIN:
         raise SolverError(f"{key!r} adalah engine bawaan dan tidak bisa ditimpa")
+    if key in _RESERVED:
+        raise SolverError(
+            f"{key!r} adalah nama yang sudah dipesan untuk worker bawaan yang belum "
+            f"jadi. Pakai nama lain (mis. '{key}_custom') supaya tidak menyesatkan "
+            f"pemanggil `solve({key!r}, ...)` di kemudian hari."
+        )
     if key in _ENGINES and not override:
         raise SolverError(f"engine {key!r} sudah terdaftar (pakai override=True untuk menimpa)")
     _ENGINES[key] = fn
@@ -181,4 +226,9 @@ def _run_engine(name: str, payload) -> str:
 
 _BUILTIN = {"image", "img", "post", "base64", "normal",
             "text", "textcaptcha", "question",
-            "audio", "sound", "voice", "grid"}
+            "audio", "sound", "voice"}
+
+# Nama yang sudah dipesan untuk worker yang BELUM jadi (mis. `grid`). Bukan
+# engine bawaan — tidak ada implementasinya — tapi tetap tidak boleh dipakai
+# engine kustom, supaya arti `solve("grid", ...)` tidak berubah diam-diam.
+_RESERVED = {"grid"}

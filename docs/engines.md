@@ -8,17 +8,24 @@ Pick the cheapest one that solves your captcha.
 | `ocr` | image bytes | distorted text (`8f3kd`) | ddddocr | ~50–200 ms |
 | `text` | question string | arithmetic / word problems | none | < 1 ms |
 | `audio` | audio bytes | spoken digits (`4C7N`) | faster-whisper | ~1–3 s |
-| `grid` | page URL + sitekey | reCAPTCHA v2, hCaptcha | Playwright + Chromium | ~5–20 s |
+| `grid` | page URL + sitekey | reCAPTCHA v2 checkbox path (**experimental** — stops at the challenge) | Playwright + Chromium | ~5–20 s |
+
+> `grid` is the odd one out: it has **no** CLI flag, **no** API parameter, and
+> `solve("grid")` raises. It's importable from Python only. hCaptcha is not
+> implemented. See its section below before assuming it does anything for you.
 
 ## Coverage at a glance
 
 **Supported:** distorted-text images · arithmetic and word questions (EN + ID) ·
-spoken audio challenges · reCAPTCHA v2 checkbox · hCaptcha widget flow.
+spoken audio challenges.
+
+**Experimental, not on any door:** reCAPTCHA v2 — the checkbox is clicked and the
+challenge is reached, and that's where it ends.
 
 **Not supported:** reCAPTCHA v3/Enterprise and Cloudflare Turnstile (score-based,
-no puzzle to solve) · image-grid selection ("click all buses") · slider/puzzle
-drag · FunCaptcha/Arkose · GeeTest. All of these need either a vision model or
-browser fingerprinting, which is out of scope for a CPU-first project. Use the
+no puzzle to solve) · image-grid selection ("click all buses") · hCaptcha (any
+puzzle) · slider/puzzle drag · FunCaptcha/Arkose · GeeTest. All of these need either
+a vision model or browser fingerprinting — deliberately out of scope. Use the
 2captcha fallback for them.
 
 ## GPU
@@ -93,7 +100,7 @@ Model, device, and compute type are env-overridable:
 | `MIAW_WHISPER_COMPUTE` | `int8` (cpu) / `float16` (cuda) | auto-selected |
 
 **Post-processing:** Whisper often returns `"4 c 7 n"` with spaces. The worker
-strips spaces, uppercases, and keeps only alphanumerics, so the answer matches
+strips spaces and punctuation and keeps only alphanumerics, so the answer matches
 the format these challenges expect.
 
 **First call is slow:** the model downloads once (~150 MB for `base`) and is
@@ -101,15 +108,23 @@ cached. Subsequent calls reuse the loaded model.
 
 ---
 
-## Grid — reCAPTCHA v2 and hCaptcha
+## Grid — reCAPTCHA v2 (experimental) and hCaptcha (not implemented)
 
-Driven by headless Chromium via Playwright. Two strategies:
+Driven by headless Chromium via Playwright.
 
-1. **Checkbox** — render the widget, click the anchor, read
-   `#g-recaptcha-response`.
-2. **Audio challenge** — when the checkbox presents an image challenge, switch
-   to the audio alternative, download the audio, and hand it to the `audio`
-   engine.
+| Capability | Status |
+|---|---|
+| Open the widget from a real origin, click the checkbox, reach the challenge | **works** — tested 3 Oct 2026 |
+| Solve the image challenge ("select all buses") | **not implemented** — needs a vision model, deliberately out of scope |
+| Audio-challenge route to a token | **unreliable** — Google frequently answers `Try again later` based on IP reputation, regardless of timing |
+| `solve_hcaptcha()` | **raises** — no solving logic exists |
+| Reachable from CLI / API / `solve("grid")` | **no** — Python import only |
+
+The code path is:
+
+1. **Checkbox** — render the widget, click the anchor, read `#g-recaptcha-response`.
+2. **Audio challenge** — when the checkbox presents an image challenge, switch to the
+   audio alternative, download the audio, hand it to the `audio` engine.
 
 ```python
 import asyncio
@@ -118,7 +133,7 @@ from captcha_solver.workers.grid import GridWorker
 async def main():
     w = GridWorker(headless=True)
     token = await w.solve_recaptcha_v2(
-        page_url="https://example.com/login",
+        pageurl="https://example.com/login",
         sitekey="6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI",
     )
     print(len(token))
@@ -129,14 +144,15 @@ asyncio.run(main())
 **Critical gotcha:** reCAPTCHA validates the *origin*. Serving the page with
 `page.set_content()` yields an `about:blank` origin and Google answers
 **"Invalid domain for site key"**. Always serve the page from a real HTTP origin
-(a local server is fine). `scripts/prove_grid.py` demonstrates the working setup.
+(a local server is fine). `scripts/prove_grid.py` demonstrates that setup.
 
 **Cost:** the slowest engine — a browser launch plus a round-trip to Google.
-Reuse the browser context across solves when you need throughput.
 
-**Verify it yourself:** `python scripts/prove_grid.py` renders Google's official
-v2 test sitekey and prints the token length. A non-zero token proves the code
-path works end to end.
+> **Reality check.** `scripts/prove_grid.py` proving a *non-zero token* is not the
+> same as solving a real site. Against Google's own demo on 3 Oct 2026 the flow
+> stopped at the image challenge — exactly where it's designed to stop. Treat this
+> engine as a scaffold for the checkbox path, not as a working reCAPTCHA solver.
+> See the README's field notes for the full run.
 
 ---
 

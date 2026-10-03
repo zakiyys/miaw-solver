@@ -39,6 +39,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r "${{ matrix.extra.req }}"
           pip install pytest
+          # TestClient butuh httpx (dipakai tests/test_server.py).
+          if [ "${{ matrix.extra.name }}" = "server" ]; then pip install httpx; fi
 
       - name: Run tests
         run: python -m pytest tests/ -v
@@ -73,6 +75,22 @@ jobs:
         run: |
           curl -fsS -X POST http://127.0.0.1:8100/solve/text -F "question=4 + 8" | tee /tmp/out.json
           grep -q '"request":"12"' /tmp/out.json
+
+      # Chromium dipasang sebagai root, container jalan sebagai `miaw`. Langkah ini
+      # membuktikan user itu benar-benar bisa menjalankan browser — bug asli yang
+      # pernah bikin jalur grid mati di Docker tanpa ketahuan.
+      - name: Chromium launchable as user miaw
+        run: |
+          docker exec miaw python3 - <<'PY'
+          import os
+          print("PLAYWRIGHT_BROWSERS_PATH =", os.environ.get("PLAYWRIGHT_BROWSERS_PATH"))
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              b = p.chromium.launch(args=["--no-sandbox"])
+              print("chromium version:", b.version)
+              b.close()
+          print("OK")
+          PY
 
       - name: Logs on failure
         if: failure()

@@ -25,8 +25,19 @@ Be honest up front, so you don't deploy it expecting magic.
 | **Image / distorted text** | `ddddocr` CNN | the classic squiggly-text image |
 | **Simple arithmetic / word question** | rule engine + safe arithmetic | "7 x 6 = ?", "tiga tambah lima" |
 | **Audio / spoken challenge** | `faster-whisper` offline STT | reCAPTCHA's "listen" alternative |
-| **reCAPTCHA v2 (checkbox)** | headless Chromium | the widget that returns a token |
-| **hCaptcha (widget flow)** | headless Chromium | gets as far as the challenge |
+
+### 🧪 Experimental — not wired to the CLI or the API
+
+Reachable only by importing `captcha_solver.workers.grid` from Python.
+
+| CAPTCHA type | What actually works | What doesn't |
+|---|---|---|
+| **reCAPTCHA v2 (checkbox)** | Browser opens the widget from a real origin, clicks the checkbox, and reaches the challenge. **Proven only against Google's official test sitekey**, which passes with no challenge at all. | On a real site it stops at the image challenge ("select all buses"). The audio route is frequently refused with `Try again later` based on IP reputation. No vision model, no fingerprint spoofing — by design. |
+| **hCaptcha** | Nothing. `solve_hcaptcha()` raises. | Not implemented. There is no hCaptcha code path beyond the raise. |
+
+> `solve("grid")` raises with an explanation. There is no CLI flag and no API
+> parameter for it. Tested 3 Oct 2026; see
+> [field notes](#field-notes-real-captchas-3-oct-2026).
 
 ### ❌ Not supported
 
@@ -35,17 +46,25 @@ Be honest up front, so you don't deploy it expecting magic.
 | **reCAPTCHA v3 / Enterprise** | score-based, no challenge to solve — needs fingerprinting + residential proxies | 2captcha fallback |
 | **Cloudflare Turnstile** | same: proof-of-work + fingerprint, not a puzzle | 2captcha fallback |
 | **Image-grid tiles** ("select all buses") | needs an object-detection/vision model — deliberately out of scope for a CPU-first, no-GPU project | 2captcha fallback |
-| **hCaptcha hard puzzles** | same vision problem as grid tiles | 2captcha fallback |
+| **hCaptcha (any puzzle)** | `solve_hcaptcha()` raises by design — the widget flow above reaches the challenge but nothing solves the tiles | 2captcha fallback |
 | **Sliders / puzzle-piece drag** | needs behavioural simulation + a vision model | 2captcha fallback |
 | **FunCaptcha / Arkose** | proprietary, needs a full browser farm | — |
 | **GeeTest v3/v4** | proprietary JS + behavioural scoring | 2captcha fallback |
 | **Bot-detection gates generally** | out of scope — this is a *captcha solver*, not an anti-bot bypass toolkit | — |
 
-**The honest summary:** this tool nails the *cheap* 80% — text images, arithmetic,
-audio, and the reCAPTCHA v2 checkbox. Anything requiring a **vision model over a
-selection grid**, or **browser fingerprinting**, is out of scope. That's exactly
-why the optional 2captcha fallback exists: local-first for the easy stuff,
-one line of config to hand the hard stuff off.
+**Not going to happen, by design.** No vision model, no stealth/anti-fingerprinting
+patches, no proxy rotation. Those three are what "solve harder captchas" would
+actually require, and each one turns this project into something else. If you need
+them, 2captcha is a *service* that already does it — which is exactly why the
+optional fallback exists.
+
+**The honest summary:** this tool reliably nails the *cheap* 80% — text images,
+arithmetic, and audio. The remaining 20% needs a **vision model over a selection
+grid** or **browser fingerprinting**, both out of scope. reCAPTCHA v2 sits on the
+line: the browser plumbing is real, but without one of those two it stays stuck at
+the challenge. That's exactly why the optional
+2captcha fallback exists: local-first for the easy stuff, one line of config to
+hand the hard stuff off.
 
 
 ---
@@ -213,7 +232,7 @@ $ curl -X POST http://localhost:8100/solve/audio -F "file=@challenge.wav"
 {"status":1,"request":"4C7N","source":"local"}
 ```
 
-Full 2captcha mirror also verified — `/in` with `method=post`, `method=base64`,
+Full 2captcha mirror also verified — `method=post`, `method=base64`,
 `method=textcaptcha`, and auto-detected audio, each followed by `/res?action=get`:
 
 ```console
@@ -223,7 +242,55 @@ $ curl "http://localhost:8100/res?action=get&id=9853a3b6b613445f"
 {"status":1,"request":"8f3kd"}
 ```
 
-An unknown id returns `{"status":0,"request":"CAPCHA_NOT_READY"}`, matching 2captcha.
+### The `.php` paths behave like 2captcha
+
+`/in.php` and `/res.php` are aliases for `/in` and `/res`, but they follow
+2captcha's **wire format**: plain text by default, JSON only on request.
+
+```console
+$ curl -X POST localhost:8100/in.php -F "file=@captcha.png" -F "method=post" -F "key=$KEY"
+OK|9853a3b6b613445f
+
+$ curl "localhost:8100/res.php?key=$KEY&action=get&id=9853a3b6b613445f"
+OK|8f3kd
+
+$ curl -X POST "localhost:8100/in.php?json=1" -F "file=@captcha.png" -F "method=post" -F "key=$KEY"
+{"status":1,"request":"9853a3b6b613445f"}
+```
+
+The key may arrive as `X-API-Key` header, a `key` query parameter, **or** a `key`
+field in the form/JSON body — 2captcha sends it in the body, so the body has to be
+read before the key can be checked.
+
+Error strings follow 2captcha:
+
+| Situation | `.php` body | `/in`, `/res` JSON |
+|---|---|---|
+| unknown or expired id | `ERROR_WRONG_CAPTCHA_ID` | `{"status":0,"request":"ERROR_WRONG_CAPTCHA_ID"}` |
+| still queued | `CAPCHA_NOT_READY` | `{"status":0,"request":"CAPCHA_NOT_READY"}` |
+| solve failed | `ERROR_CAPTCHA_UNSOLVABLE` | `{"status":0,"request":"ERROR_CAPTCHA_UNSOLVABLE"}` |
+| upload over `MIAW_MAX_UPLOAD_MB` | `ERROR_TOO_BIG_CAPTCHA_FILESIZE` | same string in JSON |
+| bad/missing key | `ERROR_WRONG_USER_KEY` (HTTP 401) | same string in JSON |
+| `method=userrecaptcha` etc. | `ERROR_METHOD_NOT_SUPPORTED` | same string in JSON |
+
+> An unknown id returns `ERROR_WRONG_CAPTCHA_ID`, **not** `CAPCHA_NOT_READY`.
+> Reporting a missing id as "not ready" makes polling clients wait forever.
+
+Methods that need a vision model or a third-party solver — `userrecaptcha`,
+`hcaptcha`, `turnstile`, `geetest`, `funcaptcha`, `coordinates`, and friends —
+are rejected explicitly instead of being silently treated as an image captcha.
+
+### Event loop
+
+Every solve runs in a worker thread (`asyncio.to_thread`), so a slow solve — audio,
+or the 2captcha fallback that polls for up to 120 s — never freezes the server.
+Measured with the solver stubbed to `time.sleep(2)`:
+
+```console
+/in.php returned in        13.1 ms
+/health while task running  2.9 ms      # before the fix: waited the full 2 s
+2 tasks @ 2 s, MIAW_WORKERS=2  2.25 s   # serial would be ~4 s
+```
 
 ### Auth & rate limiting
 
@@ -237,6 +304,13 @@ $ curl -o /dev/null -w "%{http_code}" -H "X-API-Key: <your-key>" \
 200 200 429 429 429          # MIAW_RATE_LIMIT=3 → the 4th request is throttled
 ```
 
+### Project status
+
+`Development Status :: 3 - Alpha` — deliberately. The **public API is frozen**
+(`solve_image`, `solve_text`, `solve_audio`, `register_engine`), but engine
+coverage is still narrow: grid is experimental, hCaptcha is not implemented.
+The classifier says Alpha so nobody reads "1.0" as "handles every captcha".
+
 ### Tests
 
 ```console
@@ -244,7 +318,7 @@ $ pytest tests/
 49 passed in 2.91s
 ```
 
-49 tests, CPU-only, no network in the default suite. CI runs them on Python
+84 tests, CPU-only, no network in the default suite. CI runs them on Python
 3.10 / 3.11 / 3.12 **plus** a Docker job that boots the image and smoke-tests the API.
 
 ---
@@ -316,18 +390,21 @@ Copy `.env.example` → `.env` to set the optional knobs (see [Configuration](#c
 
 | 2captcha endpoint | Miaw Solver |
 |---|---|
-| `POST /in.php` `method=post` | `POST /in` (multipart `file`) → `{"status":1,"request":"<task_id>"}` |
-| `POST /in.php` `method=base64` | `POST /in` (JSON `{"method":"base64","body":"..."}`) |
-| `POST /in.php` `method=textcaptcha` | `POST /in` (form `textcaptcha=...`) |
-| `POST /in.php` `method=audio` | `POST /in` (multipart `file`, audio auto-detected by magic bytes) |
-| `GET /res.php?action=get&id=` | `GET /res?action=get&id=` → `{"status":1,"request":"<answer>"}` |
-| `GET /res.php?action=getbalance` | `GET /balance` → `{"status":1,"request":"0.0"}` |
+| `POST /in.php` `method=post` | `POST /in.php` or `/in` (multipart `file`) → `OK\|<task_id>` / JSON |
+| `POST /in.php` `method=base64` | same (JSON `{"method":"base64","body":"...","key":"..."}`) |
+| `POST /in.php` `method=textcaptcha` | same (form `textcaptcha=...`) |
+| `POST /in.php` `method=audio` | same (multipart `file`, audio auto-detected by magic bytes) |
+| `POST /in.php` `method=userrecaptcha` | **not supported** → `ERROR_METHOD_NOT_SUPPORTED` |
+| `GET /res.php?action=get&id=` | `GET /res.php` or `/res` → `OK\|<answer>` / JSON |
+| `GET /res.php?action=getbalance` | `GET /balance` → `OK\|0.0` / JSON |
 | *(not in 2captcha)* | `POST /solve` — answer immediately, no polling |
 | *(not in 2captcha)* | `POST /solve/text`, `POST /solve/audio` |
 | *(not in 2captcha)* | `GET /health`, `GET /stats` |
 
-Polling semantics match: an unknown or expired id returns
-`{"status":0,"request":"CAPCHA_NOT_READY"}`.
+The `.php` paths answer in 2captcha's own wire format (plain text, JSON with
+`?json=1`); `/in` and `/res` always answer JSON so existing clients keep working.
+An unknown or expired id returns `ERROR_WRONG_CAPTCHA_ID` — not
+`CAPCHA_NOT_READY`, which would make a polling client wait forever.
 
 ---
 
@@ -394,11 +471,16 @@ Transitive: `ctranslate2` (~4.8, the actual inference runtime), `tokenizers`,
 first audio use, then cached — mount a volume for it in Docker so restarts don't
 re-download.
 
-### Extra: `grid` — reCAPTCHA v2 / hCaptcha
+### Extra: `grid` — reCAPTCHA v2 (experimental)
 
 | Package | Version used | Why |
 |---|---|---|
 | [`playwright`](https://playwright.dev/python/) | `>=1.40` (1.63.0 tested) | Drives a real headless Chromium to reach the audio challenge. Heavier than everything else — kept behind an extra so it's never installed by accident. |
+
+This extra buys you a **browser**, not a working reCAPTCHA solver. What it does:
+opens the widget from a real origin, clicks the checkbox, and reaches the
+challenge. What it doesn't: solve the image challenge, or get past an IP-reputation
+block on the audio route. hCaptcha is not implemented at all.
 
 Plus the browser binary itself: `playwright install chromium` (~170 MB). Not a Python
 dependency, so it can't be declared in `pyproject.toml` — you install it once.
@@ -425,7 +507,7 @@ Install size guide: core ≈ 200 MB, `+server` ≈ +40 MB, `+audio` ≈ +150 MB 
 | Package | Version used | Why |
 |---|---|---|
 | `pytest` | `>=8` (9.1.1 tested) | The test runner. All tests are offline and deterministic. |
-| `hatchling` | build backend | Declared as `build-system` in `pyproject.toml`; no manual install needed. |
+| `setuptools` | build backend | Declared in `[build-system]` (`setuptools>=68`, `setuptools.build_meta`); pip pulls it in automatically. |
 
 ---
 
@@ -454,7 +536,7 @@ miaw-solver/
 ├── testdata/                # small fixtures used by tests and examples
 ├── scripts/                 # dev-only helpers (generate fixtures, live grid proof)
 ├── assets/                  # README banners
-├── Dockerfile               # multi-stage: core / grid / gpu
+├── Dockerfile               # single-stage, build args: core / grid / gpu
 └── docker-compose.yml       # profiles: default · grid · gpu
 ```
 
@@ -512,6 +594,17 @@ captcha type. The core holds one singleton per worker, created on first use.
 Default is CPU-only, and that is the point: the test suite runs on free CI runners
 and the Docker image has no CUDA dependency. A GPU is a **turbo option**, not a
 requirement — it only speeds up the **audio** engine. Nothing else uses it.
+
+### ⚠️ The GPU Docker variant is **untested**
+
+The `gpu` compose profile builds from `nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04`
+(the `cudnn-runtime` tag matters — plain `*-runtime-*` ships no cuDNN, and
+`ctranslate2` needs it). **This project has no GPU host to build or run it on, so
+the image has never been booted.** The base tag and the reasoning are verified;
+the built image is not. Treat it as untested until someone runs it.
+
+What *is* tested: `MIAW_WHISPER_DEVICE=cuda` is read correctly by the config layer
+(shown below), and the CPU path is what CI exercises.
 
 ### ⚠️ GPU is NOT auto-detected — you must turn it on
 
@@ -592,7 +685,7 @@ nothing else in the project depends on the GPU.
 ## Tests
 
 ```bash
-pytest tests/                    # 49 tests, offline, deterministic
+pytest tests/                    # 84 tests, offline, deterministic
 pytest tests/ -v                 # verbose
 pytest tests/test_core.py -q     # a single file
 python scripts/prove_grid.py     # live grid check (needs network + Chromium)
@@ -600,10 +693,16 @@ python scripts/prove_grid.py     # live grid check (needs network + Chromium)
 
 | File | Tests | Covers |
 |---|---|---|
-| `tests/test_core.py` | 15 | the public API — image, text, audio, routing, errors |
-| `tests/test_store.py` | 10 | memory + SQLite stores, TTL, exclusive claim, `redacted()` |
-| `tests/test_grid.py` | 5 | grid URL/sitekey handling, audio detection |
+| `tests/test_core.py` | 28 | the public API — image, text, audio, routing, errors, word-numbers |
+| `tests/test_store.py` | 10 | memory + SQLite stores, TTL, exclusive claim, crash recovery, `redacted()` |
+| `tests/test_grid.py` | 11 | grid URL/sitekey handling, audio detection (incl. WebP rejection) |
 | `tests/test_plugins.py` | 11 | `register_engine` — naming, overrides, error wrapping |
+| `tests/test_concurrency.py` | 6 | `_load_*` must not double-load models across threads |
+| `tests/test_server_loop.py` | 3 | the event loop stays responsive while a solve runs |
+| `tests/test_server.py` | 15 | auth, 2captcha wire format, upload cap, unknown ids (needs `fastapi` + `httpx`) |
+
+`tests/test_server*.py` skip automatically when `fastapi`/`httpx` aren't installed,
+so the plain `pytest tests/` run stays dependency-light.
 
 CI runs on GitHub Actions across Python 3.10 / 3.11 / 3.12 — **CPU-only runners**,
 which proves the project needs no GPU — plus a Docker job that boots the image,
@@ -617,17 +716,22 @@ waits for `/health`, and checks an API response.
 
 - **v0.1** — core + CLI + library + API (image & text) ✅
 - **v0.2** — audio (faster-whisper), 2captcha fallback, auth + rate limit, Docker ✅
-- **v0.3** — grid worker: reCAPTCHA v2 verified, hCaptcha widget flow ✅
+- **v0.3** — grid worker scaffold: reCAPTCHA v2 *experimental* (reaches the challenge, then stops; not on any door) · hCaptcha not implemented at all ✅
 - **v0.4** — SQLite task store, structured logging, config module ✅
-- **v1.0** — stable API, full docs, published wheel + GHCR image ✅ **(current)**
+- **v1.0** — frozen public API, full docs, published wheel + GHCR image ✅
+- **v1.0.1** — non-blocking server, real 2captcha compatibility ✅ **(current)**
+
+<p align="center"><code>v1.0.1</code></p>
 
 **Possible next steps (no promises):**
 
-- Vision model for image-grid tiles (would break the CPU-first promise — probably a
-  separate optional extra, never a default)
 - Metrics endpoint (Prometheus format) alongside `/stats`
 - Webhook callbacks so clients don't have to poll `/res`
 - More languages in the text engine
+- **Not** on this list: vision models, stealth patches, proxy rotation. Those are
+  what the reCAPTCHA v2 path would need to go from "reaches the challenge" to
+  "solves it" — and they'd break the CPU-first, no-fingerprinting promise. If you
+  want them, point the fallback at 2captcha.
 
 ---
 

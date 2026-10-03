@@ -38,7 +38,7 @@ def main() -> None:
     # async def grid():
     #     w = GridWorker(headless=True)
     #     token = await w.solve_recaptcha_v2(
-    #         page_url="https://example.com",
+    #         pageurl="https://example.com",
     #         sitekey="6LeIxAcTAAAAAJcZVRqyHh71UMIEGNQ_MXjiZKhI",
     #     )
     #     print(f"grid  : token of {len(token)} chars")

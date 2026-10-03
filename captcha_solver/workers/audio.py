@@ -12,6 +12,7 @@ multibahasa bawaan sudah cukup; kita tidak menerjemahkan, hanya transkripsi.
 """
 from __future__ import annotations
 
+import io
 import os
 import re
 from pathlib import Path
@@ -32,14 +33,31 @@ _JUNK = re.compile(r"[^A-Za-z0-9]+")
 # Magic bytes format audio yang umum. Dipakai untuk menebak tipe task di /in
 # tanpa memaksa klien mengirim `method=audio` — 2captcha punya method itu, tapi
 # banyak klien lupa mengisinya.
-_AUDIO_MAGIC = (b"RIFF", b"OggS", b"fLaC", b"\x1a\x45\xdf\xa3")  # wav, ogg, flac, matroska
+#
+# CATATAN: `RIFF` saja TIDAK cukup — WebP memakai kontainer RIFF yang sama.
+# Penanda WAV ada di byte 8..12 (`WAVE`), jadi diperiksa terpisah di bawah.
+_AUDIO_MAGIC = (b"OggS", b"fLaC", b"\x1a\x45\xdf\xa3")  # ogg, flac, matroska
 
 
 def looks_like_audio(data: bytes) -> bool:
-    """Tebak apakah blob ini audio dari magic bytes-nya."""
+    """Tebak apakah blob ini audio dari magic bytes-nya.
+
+    Sengaja ketat: salah tebak ke arah "ini audio" berarti captcha gambar
+    dikirim ke model suara. Lebih baik mengembalikan False dan membiarkan
+    pemanggil menentukan `method=audio` secara eksplisit.
+    """
     if len(data) < 12:
         return False
-    return data[:4] in _AUDIO_MAGIC or data[:3] == b"ID3"
+    if data[:4] == b"RIFF" and data[8:12] == b"WAVE":   # WAV (bukan WebP)
+        return True
+    if data[:4] in _AUDIO_MAGIC:
+        return True
+    if data[:3] == b"ID3":                              # MP3 dengan tag ID3
+        return True
+    # MP3 tanpa ID3: frame sync 11 bit + versi/layer yang masuk akal.
+    if data[0] == 0xFF and (data[1] & 0xE0) == 0xE0 and (data[1] & 0x18) != 0x08:
+        return True
+    return False
 
 
 class AudioWorker:
@@ -68,11 +86,15 @@ class AudioWorker:
         return self._model
 
     def transcribe(self, audio) -> str:
-        """Audio -> teks mentah (apa adanya, sudah di-strip)."""
-        path = _as_path(audio)
+        """Audio -> teks mentah (apa adanya, sudah di-strip).
+
+        Bytes dikirim sebagai `io.BytesIO` — faster-whisper menerima file-like
+        object, jadi tidak ada file sementara yang perlu dibersihkan.
+        """
+        source = _as_source(audio)
         model = self._load()
         segments, _info = model.transcribe(
-            path,
+            source,
             language="en",          # captcha audio umumnya English
             beam_size=1,            # cepat; captcha cuma beberapa kata
             vad_filter=False,
@@ -91,15 +113,14 @@ class AudioWorker:
         return answer
 
 
-def _as_path(audio) -> str:
-    """faster-whisper butuh path/stream; bytes ditulis ke file sementara."""
-    if isinstance(audio, (bytes, bytearray)):
-        import tempfile
+def _as_source(audio):
+    """faster-whisper menerima path ATAU file-like object.
 
-        fd, tmp = tempfile.mkstemp(suffix=".wav")
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(bytes(audio))
-        return tmp
+    Bytes dibungkus `io.BytesIO` — tidak ada file sementara yang dibuat, jadi
+    tidak ada yang bocor kalau transkripsi gagal di tengah jalan.
+    """
+    if isinstance(audio, (bytes, bytearray)):
+        return io.BytesIO(bytes(audio))
     p = Path(audio)
     if not p.is_file():
         raise ValueError(f"file audio tidak ada: {p}")

@@ -78,6 +78,9 @@ class Config:
     task_ttl: int = field(default_factory=lambda: _env_int("MIAW_TASK_TTL", 300))
     workers: int = field(default_factory=lambda: _env_int("MIAW_WORKERS", 2))
 
+    # --- batas unggahan ---
+    max_upload_mb: int = field(default_factory=lambda: _env_int("MIAW_MAX_UPLOAD_MB", 10))
+
     # --- grid ---
     grid_headless: bool = field(default_factory=lambda: _env_bool("MIAW_GRID_HEADLESS", True))
 
@@ -109,6 +112,7 @@ class Config:
             "rate_limit": self.rate_limit,
             "task_db": bool(self.task_db),
             "workers": self.workers,
+            "max_upload_mb": self.max_upload_mb,
             "grid_headless": self.grid_headless,
             "log_level": self.log_level,
         }
